@@ -93,7 +93,15 @@ class Planner:
                 raise TypeError("planner output must be an object")
             if set(raw) - {"checkpoints"}:
                 raise ValueError("planner output has unsupported fields")
-            checkpoints = parse_checkpoints(raw["checkpoints"])
+            raw_checkpoints = raw["checkpoints"]
+            if not isinstance(raw_checkpoints, list):
+                raise TypeError("checkpoints must be a list")
+            for item in raw_checkpoints:
+                if not isinstance(item, dict):
+                    raise TypeError("checkpoint must be an object")
+                if "required" not in item or type(item["required"]) is not bool:
+                    raise ValueError("checkpoint required must be an explicit boolean")
+            checkpoints = parse_checkpoints(raw_checkpoints)
             for checkpoint in checkpoints:
                 if checkpoint.source not in scenario.text:
                     raise ValueError(
@@ -232,7 +240,7 @@ def _validate_action(action: Action, checkpoint_ids: set[str]) -> None:
         raise ValueError(f"unsupported action kind: {action.kind!r}")
     if action.checkpoint_id and action.checkpoint_id not in checkpoint_ids:
         raise ValueError(f"unknown checkpoint ID: {action.checkpoint_id}")
-    if action.kind in {"click", "fill", "select", "drag"} and not action.locator:
+    if action.kind in {"click", "fill", "select", "drag"} and not action.locator.strip():
         raise ValueError(f"{action.kind} requires a locator")
     if action.locator:
         _validate_locator(action.locator, action.kind)

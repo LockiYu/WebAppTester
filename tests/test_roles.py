@@ -44,6 +44,32 @@ def test_planner_parses_checkpoint_and_retries_with_schema_correction() -> None:
     assert "Return corrected JSON only" in provider.calls[1][1]
 
 
+def test_planner_retries_checkpoint_without_explicit_required_boolean() -> None:
+    provider = FakeProvider(
+        {
+            "checkpoints": [
+                {
+                    "id": "c1",
+                    "source": "Create a project named Alpha",
+                    "expected": "project Alpha is visible",
+                }
+            ]
+        },
+        {
+            "checkpoints": [
+                {
+                    "id": "c1",
+                    "source": "Create a project named Alpha",
+                    "expected": "project Alpha is visible",
+                    "required": True,
+                }
+            ]
+        },
+    )
+    assert Planner(provider).plan(_scenario())[0].required is True
+    assert len(provider.calls) == 2
+
+
 def test_executor_retries_unsupported_action_then_returns_action() -> None:
     provider = FakeProvider(
         {"action": {"kind": "evaluate"}},
@@ -59,6 +85,15 @@ def test_executor_rejects_arbitrary_code_locator() -> None:
     provider = FakeProvider(
         {"action": {"kind": "click", "locator": "javascript:alert(1)"}},
         {"action": {"kind": "click", "locator": "javascript:alert(1)"}},
+    )
+    with pytest.raises(ModelOutputError):
+        Executor(provider).next_action(_scenario(), (), _observation(), ())
+
+
+def test_executor_rejects_whitespace_only_locator() -> None:
+    provider = FakeProvider(
+        {"action": {"kind": "click", "locator": "   "}},
+        {"action": {"kind": "click", "locator": "\t"}},
     )
     with pytest.raises(ModelOutputError):
         Executor(provider).next_action(_scenario(), (), _observation(), ())
