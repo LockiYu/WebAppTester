@@ -217,10 +217,15 @@ def _parse_actions(raw: object) -> tuple[dict[str, str], ...]:
 def _parse_observations(raw: object) -> tuple[dict[str, object], ...]:
     if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
         raise ValueError("observations must be a list of dictionaries")
+    fields = frozenset({"id", "url", "text", "screenshot", "fingerprint"})
     observations: list[dict[str, object]] = []
     for item in raw:
-        if any(not isinstance(key, str) for key in item):
-            raise ValueError("observation keys must be strings")
+        if set(item) != fields:
+            raise ValueError("observation has missing or unsupported fields")
+        if any(not isinstance(value, str) for value in item.values()):
+            raise ValueError("observation fields must be strings")
+        if not item["id"].strip() or not item["url"].strip():
+            raise ValueError("observation id and url must be nonempty")
         observations.append(dict(item))
     return tuple(observations)
 

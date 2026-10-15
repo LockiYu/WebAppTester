@@ -139,6 +139,21 @@ def test_fail_with_only_sat_evidence_is_rejected(tmp_path: Path) -> None:
         load_run(tmp_path, report_path)
 
 
+@pytest.mark.parametrize(
+    "field, value",
+    [("id", []), ("url", {"url": "bad"}), ("text", 7)],
+)
+def test_malformed_observation_schema_is_rejected(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    report = _report(status="UNKNOWN", evidence=[])
+    report["observations"][0][field] = value
+    report_path = _write_report(tmp_path / "run", report)
+
+    with pytest.raises(ValueError):
+        load_run(tmp_path, report_path)
+
+
 def test_steps_above_budget_are_rejected(tmp_path: Path) -> None:
     report_path = _write_report(tmp_path / "run", _report(steps=36))
 

@@ -199,6 +199,23 @@ def test_dashboard_hides_page_derived_fields_and_downloads_until_reveal(
     assert at.download_button == []
 
 
+def test_dashboard_marks_unhashable_observation_unavailable_without_crashing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = tmp_path / "runs"
+    run = _write_run(runs, "malformed", status="UNKNOWN", reason="unknown", trace=None)
+    report_path = run / "report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["observations"][0]["id"] = []
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    at = _dashboard_app(tmp_path, monkeypatch).run(timeout=20)
+
+    assert at.exception == []
+    assert "UNAVAILABLE" in str(at.dataframe[0].value["Status"].tolist())
+    assert at.checkbox == []
+
+
 def test_events_export_preserves_original_order_and_safe_action_outcomes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

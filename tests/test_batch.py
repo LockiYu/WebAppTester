@@ -246,7 +246,7 @@ def test_unexpected_item_error_is_unknown_and_does_not_abort(
     assert summary["items"][0]["reason"] == "runner raised RuntimeError"
 
 
-def test_batch_rejects_exit_code_report_status_contradiction(
+def test_batch_preserves_persisted_fail_when_exit_code_disagrees(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def fake_run(args: argparse.Namespace) -> tuple[int, Path]:
@@ -264,6 +264,30 @@ def test_batch_rejects_exit_code_report_status_contradiction(
 
     monkeypatch.setattr(batch.cli, "run", fake_run)
     root = batch.run_batch(({"scenario": "contradictory", "url": "http://one"},), tmp_path / "runs")
+    summary = json.loads((root / "batch-summary.json").read_text(encoding="utf-8"))
+
+    assert summary["items"][0]["status"] == "FAIL"
+    assert summary["items"][0]["reason"] == "failed"
+
+
+def test_batch_fails_closed_for_pass_with_exit_code_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_run(args: argparse.Namespace) -> tuple[int, Path]:
+        report = args.output / "report.json"
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(json.dumps({
+            "steps": 1,
+            "elapsed_seconds": 0.1,
+            "token_usage": {"prompt": 0, "completion": 0},
+            "actions": [],
+            "observations": [{"id": "o1", "url": "http://example", "text": "visible", "screenshot": "", "fingerprint": "f"}],
+            "verdict": {"status": "PASS", "reason": "passed", "evidence": [{"checkpoint_id": "c1", "observation_id": "o1", "quote": "visible", "status": "SAT"}]},
+        }), encoding="utf-8")
+        return 1, report
+
+    monkeypatch.setattr(batch.cli, "run", fake_run)
+    root = batch.run_batch(({"scenario": "contradictory pass", "url": "http://one"},), tmp_path / "runs")
     summary = json.loads((root / "batch-summary.json").read_text(encoding="utf-8"))
 
     assert summary["items"][0]["status"] == "UNKNOWN"

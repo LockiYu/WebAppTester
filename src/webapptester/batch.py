@@ -224,10 +224,11 @@ def run_batch(items: Iterable[dict[str, object]], output_root: Path) -> Path:
             status, steps, reason, summary_report_path = _validated_report_details(
                 report_path, batch_root, Path(args.output), started_ns
             )
-            # The persisted evidence-gated verdict is authoritative, but an
-            # exit code that disagrees means the runner's result is stale or
-            # contradictory.  Keep the batch fail closed in that case.
-            if status != _status_from_exit_code(exit_code):
+            # A persisted PASS paired with a non-PASS exit code is
+            # contradictory, so fail closed. Preserve a persisted FAIL or
+            # UNKNOWN exactly as reported: the report contains the
+            # evidence-gated verdict and reason used for the batch result.
+            if status == "PASS" and _status_from_exit_code(exit_code) != "PASS":
                 status = "UNKNOWN"
                 reason = "runner exit code disagrees with persisted report"
         except Exception as error:
