@@ -135,6 +135,38 @@ def test_summary_redacts_url_credentials_but_runner_receives_original(
     assert row["url"] == summary["items"][0]["url"]
 
 
+def test_summary_replaces_malformed_url_without_leaking_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_url = "https://alice:password@[bad?token=secret"
+    seen_urls: list[str] = []
+
+    def fake_run(args: argparse.Namespace) -> tuple[int, Path]:
+        seen_urls.append(args.url)
+        report = tmp_path / "report.json"
+        report.write_text(
+            json.dumps({"steps": 0, "verdict": {"status": "UNKNOWN", "reason": "invalid target"}}),
+            encoding="utf-8",
+        )
+        return 2, report
+
+    monkeypatch.setattr(batch.cli, "run", fake_run)
+    root = batch.run_batch(
+        ({"scenario": "malformed URL", "url": original_url},),
+        tmp_path / "runs",
+    )
+    summary_text = (root / "batch-summary.json").read_text(encoding="utf-8")
+    summary = json.loads(summary_text)
+
+    assert seen_urls == [original_url]
+    assert summary["items"][0]["url"] == "[invalid URL]"
+    assert "password" not in summary_text
+    assert "secret" not in summary_text
+    with (root / "batch-summary.csv").open(newline="", encoding="utf-8") as handle:
+        row = next(csv.DictReader(handle))
+    assert row["url"] == "[invalid URL]"
+
+
 def test_main_exit_status_precedence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = tmp_path / "batch.json"
     config.write_text(json.dumps([{"scenario": "A", "url": "http://a"}]), encoding="utf-8")

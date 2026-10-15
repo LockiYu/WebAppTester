@@ -67,7 +67,7 @@ def _redact_url(url: str) -> str:
     try:
         parsed = urlsplit(url)
     except ValueError:
-        return url
+        return "[invalid URL]"
 
     netloc = parsed.netloc.rsplit("@", 1)[-1]
     query_parts: list[str] = []
