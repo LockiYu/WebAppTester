@@ -28,6 +28,20 @@ PNG observations under `screenshots/`, and `trace.zip`. It exits 0 for PASS, 1 f
 FAIL, and 2 for UNKNOWN. If the managed Playwright browser is unavailable,
 the runner falls back to an installed Google Chrome channel.
 
+To run two scenarios sequentially and export one summary, use the included
+batch configuration:
+
+```sh
+.venv/bin/webapptester-batch examples/demo-batch.json --output runs/batch
+```
+
+Each item keeps its own run artifacts under one timestamped batch directory.
+The directory contains `batch-summary.json` and `batch-summary.csv`; the
+structured summaries include scenario metadata, status, report path, step
+count, and reason without action input values. The batch command exits 0 only
+when every item passes, 1 when at least one item fails, and 2 when no item
+fails but at least one item is unknown.
+
 DeepSeek is selectable with `--provider deepseek`; it uses
 `deepseek-v4.1-flash` by default and requires `DEEPSEEK_API_KEY` in the
 environment. No DeepSeek request is made without that key.

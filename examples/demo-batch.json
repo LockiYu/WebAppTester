@@ -1,0 +1,16 @@
+[
+  {
+    "scenario": "Create project Alpha and verify it appears on the dashboard",
+    "url": "http://127.0.0.1:8765",
+    "provider": "ollama",
+    "model": "qwen2.5:3b",
+    "max_steps": 35
+  },
+  {
+    "scenario": "Open the project sidebar and verify the project list is visible",
+    "url": "http://127.0.0.1:8765",
+    "provider": "ollama",
+    "model": "qwen2.5:3b",
+    "max_steps": 35
+  }
+]

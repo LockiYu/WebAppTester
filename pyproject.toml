@@ -13,6 +13,7 @@ dependencies = [
 
 [project.scripts]
 webapptester = "webapptester.cli:main"
+webapptester-batch = "webapptester.batch:main"
 
 [project.optional-dependencies]
 test = [
