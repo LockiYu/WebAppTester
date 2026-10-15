@@ -22,8 +22,9 @@ ollama pull qwen2.5:3b
 .venv/bin/webapptester --scenario 'Create project Alpha and verify it appears on dashboard and sidebar' --url http://127.0.0.1:8765 --provider ollama --model qwen2.5:3b --output runs/demo
 ```
 
-The CLI creates the supplied run directory and writes `report.json`, append-only `events.jsonl`, PNG
-observations under `screenshots/`, and `trace.zip`. It exits 0 for PASS, 1 for
+The CLI creates a unique UTC timestamped child under the supplied output base
+(`runs/demo/<timestamp>/`) and writes `report.json`, append-only `events.jsonl`,
+PNG observations under `screenshots/`, and `trace.zip`. It exits 0 for PASS, 1 for
 FAIL, and 2 for UNKNOWN. If the managed Playwright browser is unavailable,
 the runner falls back to an installed Google Chrome channel.
 
@@ -31,10 +32,10 @@ DeepSeek is selectable with `--provider deepseek`; it uses
 `deepseek-v4.1-flash` by default and requires `DEEPSEEK_API_KEY` in the
 environment. No DeepSeek request is made without that key.
 
-To inspect a trace:
+To inspect the newest trace:
 
 ```sh
-.venv/bin/playwright show-trace runs/demo/trace.zip
+.venv/bin/playwright show-trace "$(ls -td runs/demo/*/trace.zip | head -1)"
 ```
 
 Run the tests with:

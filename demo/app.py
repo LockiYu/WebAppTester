@@ -11,11 +11,11 @@ from urllib.parse import parse_qs
 
 def _page(projects: list[str]) -> bytes:
     cards = "".join(
-        f'<article class="project-card"><h2>{html.escape(name)}</h2></article>'
+        f'<article class="project-card" data-testid="dashboard-card"><h2>Dashboard project: {html.escape(name)}</h2></article>'
         for name in projects
     ) or "<p>No projects yet.</p>"
     links = "".join(
-        f'<li><a href="/projects/{html.escape(name, quote=True)}">{html.escape(name)}</a></li>'
+        f'<li><a aria-label="Sidebar project: {html.escape(name, quote=True)}" href="/projects/{html.escape(name, quote=True)}">Sidebar project: {html.escape(name)}</a></li>'
         for name in projects
     ) or "<li>No projects yet.</li>"
     document = f"""<!doctype html>

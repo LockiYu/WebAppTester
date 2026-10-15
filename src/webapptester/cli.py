@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,20 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", type=Path, default=Path("runs/demo"))
     parser.add_argument("--max-steps", type=int, default=MAX_STEPS)
     return parser
+
+
+def _make_run_directory(base: Path) -> Path:
+    """Create a unique timestamped child directory for one invocation."""
+
+    base.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    candidate = base / stamp
+    suffix = 1
+    while candidate.exists():
+        candidate = base / f"{stamp}-{suffix}"
+        suffix += 1
+    candidate.mkdir()
+    return candidate
 
 
 def _unknown_report(store: RunStore, *, trace_path: Path, started: float, reason: str) -> Path:
@@ -59,7 +74,7 @@ def _launch_chromium(chromium: Any) -> Any:
 
 def run(args: argparse.Namespace) -> tuple[int, Path]:
     started = time.monotonic()
-    output = Path(args.output)
+    output = _make_run_directory(Path(args.output))
     store = RunStore(output)
     trace_path = output / "trace.zip"
     max_steps = args.max_steps
@@ -196,7 +211,10 @@ def run(args: argparse.Namespace) -> tuple[int, Path]:
     if verdict_status == "FAIL":
         print(f"FAIL: report={report}")
         return 1, report
-    print(f"UNKNOWN: Ollama unavailable or role output was unsupported; report={report}", file=sys.stderr)
+    print(
+        f"UNKNOWN: {args.provider} unavailable or role output was unsupported; report={report}",
+        file=sys.stderr,
+    )
     return 2, report
 
 

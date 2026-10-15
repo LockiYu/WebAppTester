@@ -11,6 +11,7 @@ from urllib.request import urlopen
 from playwright.sync_api import Playwright, sync_playwright
 
 from webapptester.browser import BrowserGateway
+from webapptester.cli import _make_run_directory
 from webapptester.controller import Controller
 from webapptester.schema import Action, Checkpoint, Evidence, Observation, Scenario
 from webapptester.store import RunStore
@@ -62,19 +63,33 @@ class _ScriptedExecutor:
 class _ScriptedVerifier:
     def verify(self, checkpoints, observations):
         current = observations[-1]
-        if "Alpha" not in current.text:
+        dashboard_quote = "Dashboard project: Alpha"
+        sidebar_quote = "Sidebar project: Alpha"
+        if dashboard_quote not in current.text or sidebar_quote not in current.text:
             return ()
-        return tuple(
-            Evidence(checkpoint.id, current.id, "Alpha", "SAT") for checkpoint in checkpoints
+        return (
+            Evidence("dashboard", current.id, dashboard_quote, "SAT"),
+            Evidence("sidebar", current.id, sidebar_quote, "SAT"),
         )
 
 
 class _MissingSidebarVerifier(_ScriptedVerifier):
     def verify(self, checkpoints, observations):
         current = observations[-1]
-        if "Alpha" not in current.text:
+        if "Dashboard project: Alpha" not in current.text:
             return ()
-        return (Evidence("dashboard", current.id, "Alpha", "SAT"),)
+        return (Evidence("dashboard", current.id, "Dashboard project: Alpha", "SAT"),)
+
+
+def test_cli_output_creates_unique_timestamped_run_directories(tmp_path: Path) -> None:
+    base = tmp_path / "runs" / "demo"
+    first = _make_run_directory(base)
+    second = _make_run_directory(base)
+    assert first.parent == base
+    assert second.parent == base
+    assert first != second
+    assert first.name.endswith("Z")
+    assert second.name.endswith("Z")
 
 
 def _start_demo(port: int) -> subprocess.Popen[str]:
@@ -122,7 +137,8 @@ def test_scripted_controller_real_browser_persists_pass_evidence(tmp_path: Path)
                     _ScriptedPlanner(), _ScriptedExecutor(), _ScriptedVerifier(), gateway, store
                 ).run(scenario)
                 body = page.locator("body").inner_text()
-                sidebar_links = page.get_by_role("link", name="Alpha").count()
+                dashboard_cards = page.get_by_test_id("dashboard-card").count()
+                sidebar_links = page.get_by_role("link", name="Sidebar project: Alpha").count()
             finally:
                 context.tracing.stop(path=str(trace_path))
                 context.close()
@@ -135,8 +151,10 @@ def test_scripted_controller_real_browser_persists_pass_evidence(tmp_path: Path)
         assert trace_path.is_file() and trace_path.stat().st_size > 0
         screenshots = list((tmp_path / "run" / "screenshots").glob("*.png"))
         assert screenshots and all(path.stat().st_size > 0 for path in screenshots)
-        assert "Alpha" in body
+        assert "Dashboard project: Alpha" in body
+        assert dashboard_cards == 1
         assert sidebar_links == 1
+        assert "Sidebar project: Alpha" in body
     finally:
         demo.terminate()
         demo.wait(timeout=5)
