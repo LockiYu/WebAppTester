@@ -18,6 +18,9 @@ webapptester = "webapptester.cli:main"
 test = [
     "pytest>=8,<10",
 ]
+ui = [
+    "streamlit>=1.55,<2",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

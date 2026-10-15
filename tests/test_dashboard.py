@@ -1,0 +1,147 @@
+import base64
+import json
+import os
+import time
+from pathlib import Path
+
+import streamlit
+
+from streamlit.testing.v1 import AppTest
+from webapptester.dashboard import _read_redacted_json, _read_redacted_jsonl
+from webapptester.results import list_runs
+
+
+_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+    "YAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+)
+
+
+def _write_run(
+    root: Path,
+    name: str,
+    *,
+    status: str,
+    reason: str,
+    screenshot: str = "screenshots/observation-0001.png",
+    trace: str | None = "trace.zip",
+    steps: int = 3,
+    tokens: tuple[int, int] = (12, 8),
+) -> Path:
+    run = root / name
+    run.mkdir(parents=True)
+    report = {
+        "steps": steps,
+        "elapsed_seconds": 1.25,
+        "token_usage": {"prompt": tokens[0], "completion": tokens[1]},
+        "trace_path": trace,
+        "actions": [
+            {"kind": "goto", "locator": "https://example.test", "checkpoint_id": ""},
+            {"kind": "click", "locator": "role=button;name=Create", "checkpoint_id": "c1", "value": "secret"},
+        ],
+        "observations": [
+            {
+                "id": "o1",
+                "url": "https://example.test",
+                "text": "The project dashboard is visible.",
+                "screenshot": screenshot,
+                "fingerprint": "abc",
+            }
+        ],
+        "verdict": {
+            "status": status,
+            "reason": reason,
+            "evidence": [
+                {
+                    "checkpoint_id": "c1",
+                    "observation_id": "o1",
+                    "quote": "project dashboard",
+                    "status": "SAT" if status == "PASS" else "VIOLATED",
+                }
+            ],
+        },
+    }
+    (run / "report.json").write_text(json.dumps(report), encoding="utf-8")
+    if screenshot:
+        screenshot_path = run / screenshot
+        screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+        screenshot_path.write_bytes(_PNG)
+    if trace:
+        (run / trace).write_bytes(b"trace")
+    (run / "events.jsonl").write_text('{"event":"done"}\n', encoding="utf-8")
+    return run
+
+
+def _dashboard_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AppTest:
+    monkeypatch.chdir(tmp_path)
+    return AppTest.from_file(str(Path(__file__).parents[1] / "src/webapptester/dashboard.py"))
+
+
+def test_dashboard_history_and_selected_run_show_evidence_and_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = tmp_path / "runs"
+    _write_run(
+        runs,
+        "pass-run",
+        status="PASS",
+        reason="all required checkpoints have supported SAT evidence",
+        screenshot="screenshots/missing.png",
+        trace=None,
+        tokens=(0, 0),
+    )
+    fail = _write_run(
+        runs,
+        "fail-run",
+        status="FAIL",
+        reason="a required checkpoint is directly shown to be VIOLATED",
+    )
+    now = time.time()
+    os.utime(runs / "pass-run" / "report.json", (now - 10, now - 10))
+    os.utime(runs / "fail-run" / "report.json", (now, now))
+    (runs / "pass-run" / "screenshots" / "missing.png").unlink()
+
+    at = _dashboard_app(tmp_path, monkeypatch).run(timeout=20)
+
+    assert at.exception == []
+    history_text = str(at.dataframe[0].value)
+    assert "PASS" in history_text
+    assert "FAIL" in history_text
+    assert any("scripted/local" in source for source in at.dataframe[0].value["Source"].tolist())
+
+    at.selectbox[0].set_value(1).run()
+
+    text = "\n".join(
+        [item.value for item in at.markdown]
+        + [item.value for item in at.caption]
+        + [item.value for item in at.warning]
+        + [item.value for item in at.info]
+        + [f"{item.label}: {item.value}" for item in at.metric]
+    )
+    assert at.exception == []
+    assert "PASS" in text
+    assert "all required checkpoints have supported SAT evidence" in text
+    assert "Steps" in text
+    assert "Prompt tokens" in text
+    assert "Completion tokens" in text
+    assert "o1" in text
+    assert "project dashboard" in text
+    assert "Unavailable" in text or "unavailable" in text
+    assert any(button.label == "Download report.json" for button in at.download_button)
+    assert any(button.label == "Download events.jsonl" for button in at.download_button)
+    selected = next(run for run in list_runs(runs) if run.status == "PASS")
+    assert b"secret" not in (_read_redacted_json(runs, selected, "report.json") or b"")
+    assert b"secret" not in (_read_redacted_jsonl(runs, selected, "events.jsonl") or b"")
+    assert not any(button.label == "Download trace.zip" for button in at.download_button)
+
+    at.selectbox[0].set_value(0).run()
+    assert any(button.label == "Download trace.zip" for button in at.download_button)
+
+
+def test_dashboard_empty_root_is_readable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "runs").mkdir()
+
+    at = _dashboard_app(tmp_path, monkeypatch).run(timeout=20)
+
+    assert at.exception == []
+    assert any("No valid runs found" in item.value for item in at.info)
