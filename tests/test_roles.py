@@ -1,6 +1,6 @@
 import pytest
 
-from webapptester.roles import Executor, ModelOutputError, Planner, Verifier
+from webapptester.roles import Executor, GapRequest, ModelOutputError, Planner, Verifier, VerificationResult
 from webapptester.schema import Action, Checkpoint, Observation, Scenario
 
 
@@ -142,3 +142,41 @@ def test_verifier_rejects_unknown_observation_and_retries_once() -> None:
     )
     with pytest.raises(ModelOutputError):
         Verifier(provider).verify((Checkpoint("c1", "Create", "exists"),), (_observation(),))
+
+
+def test_verifier_can_return_a_structured_gap_request() -> None:
+    provider = FakeProvider(
+        {
+            "evidence": [],
+            "gap_request": {
+                "checkpoint_id": "c1",
+                "requested_evidence": "the project appears in the sidebar",
+                "suggested_location": "sidebar",
+                "estimated_action_cost": 1,
+            },
+        }
+    )
+
+    result = Verifier(provider).verify(
+        (Checkpoint("c1", "Create a project", "project exists"),),
+        (_observation(),),
+    )
+
+    assert isinstance(result, VerificationResult)
+    assert isinstance(result.gap_request, GapRequest)
+    assert result.gap_request.checkpoint_id == "c1"
+
+
+def test_executor_prompt_receives_gap_request() -> None:
+    provider = FakeProvider({"action": {"kind": "click", "locator": "#sidebar"}})
+
+    Executor(provider).next_action(
+        _scenario(),
+        (Checkpoint("c1", "Create a project", "project exists"),),
+        _observation(),
+        (),
+        gap_request=GapRequest("c1", "the project appears in the sidebar"),
+    )
+
+    assert '"checkpoint_id": "c1"' in provider.calls[0][1]
+    assert "the project appears in the sidebar" in provider.calls[0][1]

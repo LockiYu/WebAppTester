@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TypeVar
 
 from .providers import ModelOutputError, ModelProvider
@@ -27,6 +28,34 @@ from .schema import (
 
 
 T = TypeVar("T")
+
+
+@dataclass(frozen=True, slots=True)
+class GapRequest:
+    """A verifier request for one missing piece of checkpoint evidence."""
+
+    checkpoint_id: str
+    requested_evidence: str
+    suggested_location: str = ""
+    estimated_action_cost: int = 1
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.checkpoint_id, str) or not self.checkpoint_id.strip():
+            raise ValueError("gap request checkpoint_id must be nonempty")
+        if not isinstance(self.requested_evidence, str) or not self.requested_evidence.strip():
+            raise ValueError("gap request requested_evidence must be nonempty")
+        if not isinstance(self.suggested_location, str):
+            raise ValueError("gap request suggested_location must be a string")
+        if type(self.estimated_action_cost) is not int or self.estimated_action_cost < 0:
+            raise ValueError("gap request estimated_action_cost must be non-negative")
+
+
+@dataclass(frozen=True, slots=True)
+class VerificationResult:
+    """Evidence plus an optional request; no-gap calls still return a tuple."""
+
+    evidence: tuple[Evidence, ...]
+    gap_request: GapRequest
 
 
 def retry_parse(
@@ -73,6 +102,9 @@ Return one JSON object with exactly this shape:
 {"evidence":[{"checkpoint_id":"c1","observation_id":"o1","quote":"copied visible text","status":"SAT"}]}
 Each entry must reference a supplied checkpoint and observation. Copy quote verbatim
 from that observation's stored visible text. Status must be SAT, VIOLATED, or UNKNOWN.
+When required evidence is not available, optionally include
+{"gap_request":{"checkpoint_id":"c1","requested_evidence":"visible sidebar link",
+"suggested_location":"sidebar","estimated_action_cost":1}}.
 Do not infer evidence without an observation and do not return prose or unsupported fields."""
 
 
@@ -124,36 +156,38 @@ class Executor:
         checkpoints: tuple[Checkpoint, ...],
         observation: Observation,
         history: tuple[Action, ...],
+        gap_request: GapRequest | object | None = None,
     ) -> Action:
         system = EXECUTOR_SYSTEM
-        user = "Input:\n" + _json(
-            {
-                "scenario": {"text": scenario.text, "url": scenario.url},
-                "checkpoints": [
-                    {
-                        "id": checkpoint.id,
-                        "source": checkpoint.source,
-                        "expected": checkpoint.expected,
-                        "required": checkpoint.required,
-                    }
-                    for checkpoint in checkpoints
-                ],
-                "observation": {
-                    "id": observation.id,
-                    "url": observation.url,
-                    "text": observation.text,
-                },
-                "history": [
-                    {
-                        "kind": action.kind,
-                        "locator": action.locator,
-                        "value": action.value,
-                        "checkpoint_id": action.checkpoint_id,
-                    }
-                    for action in history
-                ],
-            }
-        )
+        payload: dict[str, object] = {
+            "scenario": {"text": scenario.text, "url": scenario.url},
+            "checkpoints": [
+                {
+                    "id": checkpoint.id,
+                    "source": checkpoint.source,
+                    "expected": checkpoint.expected,
+                    "required": checkpoint.required,
+                }
+                for checkpoint in checkpoints
+            ],
+            "observation": {
+                "id": observation.id,
+                "url": observation.url,
+                "text": observation.text,
+            },
+            "history": [
+                {
+                    "kind": action.kind,
+                    "locator": action.locator,
+                    "value": action.value,
+                    "checkpoint_id": action.checkpoint_id,
+                }
+                for action in history
+            ],
+        }
+        if gap_request is not None:
+            payload["gap_request"] = _gap_request_payload(gap_request)
+        user = "Input:\n" + _json(payload)
         checkpoint_ids = {checkpoint.id for checkpoint in checkpoints}
 
         def parse(raw: dict[str, object]) -> Action:
@@ -178,7 +212,7 @@ class Verifier:
         self,
         checkpoints: tuple[Checkpoint, ...],
         observations: tuple[Observation, ...],
-    ) -> tuple[Evidence, ...]:
+    ) -> tuple[Evidence, ...] | VerificationResult:
         system = VERIFIER_SYSTEM
         user = "Verification inputs:\n" + _json(
             {
@@ -207,10 +241,10 @@ class Verifier:
         if len(observation_by_id) != len(observations):
             raise ValueError("observation IDs must be unique")
 
-        def parse(raw: dict[str, object]) -> tuple[Evidence, ...]:
+        def parse(raw: dict[str, object]) -> tuple[Evidence, ...] | VerificationResult:
             if not isinstance(raw, dict):
                 raise TypeError("verifier output must be an object")
-            if set(raw) - {"evidence"}:
+            if set(raw) - {"evidence", "gap_request"}:
                 raise ValueError("verifier output has unsupported fields")
             values = raw["evidence"]
             if not isinstance(values, list):
@@ -230,7 +264,31 @@ class Verifier:
                     raise ValueError(
                         f"evidence quote is not copied from observation {item.observation_id}"
                     )
-            return evidence
+            if "gap_request" not in raw:
+                return evidence
+            gap_raw = raw["gap_request"]
+            if not isinstance(gap_raw, dict):
+                raise TypeError("gap_request must be an object")
+            if set(gap_raw) - {
+                "checkpoint_id",
+                "requested_evidence",
+                "suggested_location",
+                "estimated_action_cost",
+            }:
+                raise ValueError("gap_request has unsupported fields")
+            required_gap_fields = ("checkpoint_id", "requested_evidence")
+            if any(field not in gap_raw for field in required_gap_fields):
+                raise ValueError("gap_request has missing required fields")
+            checkpoint_id = gap_raw["checkpoint_id"]
+            if checkpoint_id not in checkpoint_ids:
+                raise ValueError(f"unknown gap checkpoint ID: {checkpoint_id}")
+            gap = GapRequest(
+                checkpoint_id=checkpoint_id,
+                requested_evidence=gap_raw["requested_evidence"],
+                suggested_location=gap_raw.get("suggested_location", ""),
+                estimated_action_cost=gap_raw.get("estimated_action_cost", 1),
+            )
+            return VerificationResult(evidence=evidence, gap_request=gap)
 
         return retry_parse(self.provider, system, user, parse)
 
@@ -244,6 +302,22 @@ def _validate_action(action: Action, checkpoint_ids: set[str]) -> None:
         raise ValueError(f"{action.kind} requires a locator")
     if action.locator:
         _validate_locator(action.locator, action.kind)
+
+
+def _gap_request_payload(gap_request: object) -> dict[str, object]:
+    """Copy only the structured, non-browser fields into an Executor prompt."""
+
+    values = {
+        "checkpoint_id": getattr(gap_request, "checkpoint_id", ""),
+        "requested_evidence": getattr(gap_request, "requested_evidence", ""),
+        "suggested_location": getattr(gap_request, "suggested_location", ""),
+        "estimated_action_cost": getattr(gap_request, "estimated_action_cost", 1),
+    }
+    if not isinstance(values["checkpoint_id"], str) or not values["checkpoint_id"].strip():
+        raise ValueError("gap_request checkpoint_id must be nonempty")
+    if not isinstance(values["requested_evidence"], str) or not values["requested_evidence"].strip():
+        raise ValueError("gap_request requested_evidence must be nonempty")
+    return values
 
 
 _ROLE_LOCATOR = re.compile(r"^role=[^;\s]+;name=.+$")
@@ -276,8 +350,10 @@ def _validate_locator(locator: str, kind: str) -> None:
 
 __all__ = [
     "Executor",
+    "GapRequest",
     "ModelOutputError",
     "Planner",
+    "VerificationResult",
     "Verifier",
     "retry_parse",
 ]

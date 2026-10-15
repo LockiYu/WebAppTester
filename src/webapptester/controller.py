@@ -68,10 +68,34 @@ def verdict_from_evidence(
         )
 
     evidence_by_checkpoint: dict[str, list[Evidence]] = {}
+    checkpoint_ids = {checkpoint.id for checkpoint in checkpoint_values}
     for item in evidence_values:
         checkpoint_id = getattr(item, "checkpoint_id", None)
-        if isinstance(checkpoint_id, str):
-            evidence_by_checkpoint.setdefault(checkpoint_id, []).append(item)
+        observation_id = getattr(item, "observation_id", None)
+        quote = getattr(item, "quote", None)
+        status = getattr(item, "status", None)
+        observation = observation_by_id.get(observation_id)
+        # Validate every submitted item, including optional or extra entries.
+        # Otherwise an unsupported model claim could sit beside valid SAT
+        # evidence and still accidentally produce PASS.
+        if (
+            not isinstance(item, Evidence)
+            or not isinstance(checkpoint_id, str)
+            or checkpoint_id not in checkpoint_ids
+            or not isinstance(observation_id, str)
+            or observation is None
+            or observation_id in duplicate_observations
+            or not isinstance(quote, str)
+            or not quote.strip()
+            or quote not in observation.text
+            or status not in {"SAT", "VIOLATED", "UNKNOWN"}
+        ):
+            return Verdict(
+                status="UNKNOWN",
+                evidence=evidence_values,
+                reason="submitted evidence is unsupported or not grounded in an observation",
+            )
+        evidence_by_checkpoint.setdefault(checkpoint_id, []).append(item)
 
     supported: dict[str, Evidence] = {}
     for checkpoint in required:
@@ -183,6 +207,14 @@ class Controller:
                 except BudgetExhausted:
                     self._append_action_event(action, success=False, error_class="BudgetExhausted")
                     stop_reason = "browser action budget exhausted"
+                    break
+                except Exception as error:
+                    self._append_action_event(
+                        action,
+                        success=False,
+                        error_class=type(error).__name__,
+                    )
+                    stop_reason = "browser action failed"
                     break
 
                 success = bool(getattr(result, "success", True))
@@ -397,6 +429,16 @@ class Controller:
                     estimated_action_cost=int(value.get("estimated_action_cost", 1)),
                 )
             except (KeyError, TypeError, ValueError):
+                return None
+        if hasattr(value, "checkpoint_id") and hasattr(value, "requested_evidence"):
+            try:
+                return GapRequest(
+                    checkpoint_id=str(getattr(value, "checkpoint_id")),
+                    requested_evidence=str(getattr(value, "requested_evidence")),
+                    suggested_location=str(getattr(value, "suggested_location", "")),
+                    estimated_action_cost=int(getattr(value, "estimated_action_cost", 1)),
+                )
+            except (TypeError, ValueError):
                 return None
         return None
 

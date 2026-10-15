@@ -50,6 +50,16 @@ def test_unreferenced_sat_quote_is_unknown() -> None:
     assert verdict.status == "UNKNOWN"
 
 
+def test_unsupported_extra_evidence_forces_unknown() -> None:
+    verdict = verdict_from_evidence(
+        (_checkpoint(),),
+        (_evidence(), _evidence("unexpected", quote="visible state")),
+        (_observation(),),
+    )
+
+    assert verdict.status == "UNKNOWN"
+
+
 def test_direct_violated_quote_is_fail() -> None:
     verdict = verdict_from_evidence(
         (_checkpoint(),),
@@ -111,6 +121,12 @@ class _FakeBrowser:
         )
 
 
+class _RaisingBrowser(_FakeBrowser):
+    def act(self, action):
+        self.steps += 1
+        raise RuntimeError("secret-value must not be persisted")
+
+
 class _FakeStore:
     def __init__(self) -> None:
         self.events = []
@@ -144,6 +160,27 @@ def test_action_timeout_alone_is_unknown_and_redacts_action_value() -> None:
     report_text = json.dumps(store.report)
     assert "secret-value" not in report_text
     assert "secret-value" not in json.dumps(store.events)
+
+
+def test_browser_exception_after_reserving_step_is_appended_without_secret() -> None:
+    store = _FakeStore()
+    browser = _RaisingBrowser()
+    controller = Controller(
+        _FakePlanner((_checkpoint(),)),
+        _FakeExecutor([Action("fill", "#password", "secret-value")]),
+        _FakeVerifier(),
+        browser,
+        store,
+    )
+
+    verdict = controller.run(_scenario())
+
+    assert verdict.status == "UNKNOWN"
+    assert browser.steps == 1
+    assert store.events[0]["error_class"] == "RuntimeError"
+    event_text = json.dumps(store.events)
+    assert "secret-value" not in event_text
+    assert "must not be persisted" not in event_text
 
 
 def test_budget_exhaustion_terminates_at_exactly_35_steps() -> None:
