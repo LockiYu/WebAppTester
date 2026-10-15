@@ -15,6 +15,15 @@ from .schema import (
     parse_scenario,
     parse_verdict,
 )
+from .providers import (
+    DeepSeek,
+    DeepSeekProvider,
+    ModelOutputError,
+    Ollama,
+    OllamaProvider,
+    TokenUsage,
+)
+from .roles import Executor, Planner, Verifier
 
 __all__ = [
     "Action",
@@ -30,4 +39,13 @@ __all__ = [
     "parse_observation",
     "parse_scenario",
     "parse_verdict",
+    "DeepSeek",
+    "DeepSeekProvider",
+    "Executor",
+    "ModelOutputError",
+    "Ollama",
+    "OllamaProvider",
+    "Planner",
+    "TokenUsage",
+    "Verifier",
 ]
