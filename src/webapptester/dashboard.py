@@ -22,59 +22,72 @@ def _history_label(run: RunRecord) -> str:
     return f"{run.directory.name} · {run.status} · {_source_label(run)}"
 
 
-def _read_artifact(root: Path, run: RunRecord, relative_path: str) -> bytes | None:
-    path = artifact_path(root, run, relative_path)
-    if path is None:
+def _safe_action(action: dict[str, str]) -> dict[str, str]:
+    return {key: action[key] for key in ("kind", "locator", "checkpoint_id") if key in action}
+
+
+def _safe_observation(observation: dict[str, object]) -> dict[str, object]:
+    fields = ("id", "url", "text", "screenshot", "fingerprint")
+    return {key: observation[key] for key in fields if key in observation}
+
+
+def _safe_evidence(item: dict[str, str]) -> dict[str, str]:
+    fields = ("checkpoint_id", "observation_id", "quote", "status")
+    return {key: item[key] for key in fields}
+
+
+def _trace_artifact(root: Path, run: RunRecord) -> Path | None:
+    """Revalidate the trace path immediately before exposing or reading it."""
+
+    if run.trace is None:
         return None
-    try:
-        return path.read_bytes()
-    except OSError:
+    return artifact_path(root, run, str(run.trace))
+
+
+def _report_export(root: Path, run: RunRecord) -> bytes | None:
+    if artifact_path(root, run, "report.json") is None:
         return None
+    trace = _trace_artifact(root, run)
+    payload: dict[str, Any] = {
+        "steps": run.steps,
+        "elapsed_seconds": run.elapsed_seconds,
+        "token_usage": {
+            "prompt": run.token_usage.get("prompt", 0),
+            "completion": run.token_usage.get("completion", 0),
+        },
+        "trace_path": "trace.zip" if trace is not None else None,
+        "actions": [_safe_action(action) for action in run.actions],
+        "observations": [_safe_observation(item) for item in run.observations],
+        "verdict": {
+            "status": run.status,
+            "reason": run.reason,
+            "evidence": [_safe_evidence(item) for item in run.evidence],
+        },
+    }
+    return (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
 
 
-def _redact_values(value: Any, *, action_context: bool = False) -> Any:
-    """Keep only safe action fields while recursively sanitizing JSON exports."""
-
-    if isinstance(value, dict):
-        looks_like_action = action_context or (
-            "kind" in value
-            and any(key in value for key in ("locator", "checkpoint_id", "value", "input"))
-        )
-        result: dict[str, Any] = {}
-        for key, item in value.items():
-            if looks_like_action and key not in {"kind", "locator", "checkpoint_id"}:
-                continue
-            result[key] = _redact_values(item, action_context=looks_like_action or key == "action")
-        return result
-    if isinstance(value, list):
-        return [_redact_values(item, action_context=action_context) for item in value]
-    return value
-
-
-def _read_redacted_json(root: Path, run: RunRecord, relative_path: str) -> bytes | None:
-    raw = _read_artifact(root, run, relative_path)
-    if raw is None:
+def _events_export(root: Path, run: RunRecord) -> bytes | None:
+    if artifact_path(root, run, "events.jsonl") is None:
         return None
-    try:
-        parsed = json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    return (json.dumps(_redact_values(parsed), ensure_ascii=False, indent=2) + "\n").encode(
+    events: list[dict[str, Any]] = []
+    events.extend(
+        {"type": "observation", **_safe_observation(item)} for item in run.observations
+    )
+    events.extend({"type": "action", "action": _safe_action(item)} for item in run.actions)
+    return ("\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n").encode(
         "utf-8"
     )
 
 
-def _read_redacted_jsonl(root: Path, run: RunRecord, relative_path: str) -> bytes | None:
-    raw = _read_artifact(root, run, relative_path)
-    if raw is None:
+def _trace_data(root: Path, run: RunRecord) -> bytes | None:
+    trace = _trace_artifact(root, run)
+    if trace is None:
         return None
     try:
-        lines = raw.decode("utf-8").splitlines()
-        redacted = [json.dumps(_redact_values(json.loads(line)), ensure_ascii=False) for line in lines]
-    except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
+        return trace.read_bytes()
+    except OSError:
         return None
-    suffix = "\n" if redacted else ""
-    return ("\n".join(redacted) + suffix).encode("utf-8")
 
 
 def _artifact_warning(label: str) -> None:
@@ -85,11 +98,11 @@ def _render_downloads(root: Path, run: RunRecord, *, reveal_raw: bool) -> None:
     st.subheader("Downloads")
     columns = st.columns(3)
     download_specs = (
-        ("report.json", "application/json", _read_redacted_json),
-        ("events.jsonl", "application/x-ndjson", _read_redacted_jsonl),
+        ("report.json", "application/json", _report_export),
+        ("events.jsonl", "application/x-ndjson", _events_export),
     )
     for column, (name, mime, reader) in zip(columns, download_specs):
-        data = reader(root, run, name)
+        data = reader(root, run)
         with column:
             if data is None:
                 _artifact_warning(name)
@@ -106,24 +119,17 @@ def _render_downloads(root: Path, run: RunRecord, *, reveal_raw: bool) -> None:
         if not reveal_raw:
             st.caption("Raw trace hidden until evidence is revealed.")
             return
-        trace = run.trace
-        if trace is None:
+        trace_data = _trace_data(root, run)
+        if trace_data is None:
             _artifact_warning("trace.zip")
         else:
-            try:
-                trace_data = trace.read_bytes()
-            except OSError:
-                trace_data = None
-            if trace_data is None:
-                _artifact_warning("trace.zip")
-            else:
-                st.download_button(
-                    "Download trace.zip",
-                    data=trace_data,
-                    file_name="trace.zip",
-                    mime="application/zip",
-                    key=f"download-{run.directory}-trace.zip",
-                )
+            st.download_button(
+                "Download trace.zip",
+                data=trace_data,
+                file_name="trace.zip",
+                mime="application/zip",
+                key=f"download-{run.directory}-trace.zip",
+            )
 
 
 def _render_evidence(run: RunRecord) -> None:

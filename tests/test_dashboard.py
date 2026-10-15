@@ -5,10 +5,9 @@ import time
 from pathlib import Path
 
 import pytest
-import streamlit
 
 from streamlit.testing.v1 import AppTest
-from webapptester.dashboard import _read_redacted_json, _read_redacted_jsonl
+from webapptester.dashboard import _events_export, _report_export, _trace_data
 from webapptester.results import list_runs
 
 
@@ -36,6 +35,9 @@ def _write_run(
         "elapsed_seconds": 1.25,
         "token_usage": {"prompt": tokens[0], "completion": tokens[1]},
         "trace_path": trace,
+        "secret": "top-level secret",
+        "password": "top-level password",
+        "api_key": "top-level api key",
         "actions": [
             {"kind": "goto", "locator": "https://example.test", "checkpoint_id": ""},
             {"kind": "click", "locator": "role=button;name=Create", "checkpoint_id": "c1", "value": "secret"},
@@ -149,13 +151,24 @@ def test_dashboard_history_and_selected_run_show_evidence_and_artifacts(
     assert any(button.label == "Download report.json" for button in at.download_button)
     assert any(button.label == "Download events.jsonl" for button in at.download_button)
     selected = next(run for run in list_runs(runs) if run.status == "PASS")
-    assert b"secret" not in (_read_redacted_json(runs, selected, "report.json") or b"")
-    assert b"secret" not in (_read_redacted_jsonl(runs, selected, "events.jsonl") or b"")
+    report_export = _report_export(runs, selected) or b""
+    events_export = _events_export(runs, selected) or b""
+    for secret in (b"secret", b"password", b"api_key", b"discard this", b"another secret"):
+        assert secret not in report_export
+        assert secret not in events_export
     assert not any(button.label == "Download trace.zip" for button in at.download_button)
 
     at.selectbox[0].set_value(0).run()
     at.checkbox[0].set_value(True).run()
     assert any(button.label == "Download trace.zip" for button in at.download_button)
+
+    trace_run = next(run for run in list_runs(runs) if run.status == "FAIL")
+    outside_trace = tmp_path / "outside.trace.zip"
+    outside_trace.write_bytes(b"outside")
+    assert trace_run.trace is not None
+    trace_run.trace.unlink()
+    trace_run.trace.symlink_to(outside_trace)
+    assert _trace_data(runs, trace_run) is None
 
 
 def test_dashboard_empty_root_is_readable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
