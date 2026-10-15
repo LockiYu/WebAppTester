@@ -14,6 +14,9 @@ from dataclasses import dataclass
 from typing import Protocol
 
 
+DEEPSEEK_MAX_TOKENS = 1024
+
+
 class ModelOutputError(RuntimeError):
     """Raised when a provider cannot return a valid structured response."""
 
@@ -171,7 +174,7 @@ class DeepSeekProvider(_HTTPJSONProvider):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "deepseek-v4.1-flash",
+        model: str = "deepseek-flash",
         url: str = "https://api.deepseek.com/chat/completions",
     ) -> None:
         super().__init__()
@@ -195,6 +198,7 @@ class DeepSeekProvider(_HTTPJSONProvider):
             ],
             "stream": False,
             "response_format": {"type": "json_object"},
+            "max_tokens": DEEPSEEK_MAX_TOKENS,
         }
         return self._complete(
             url=self.url,

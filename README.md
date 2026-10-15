@@ -43,8 +43,9 @@ when every item passes, 1 when at least one item fails, and 2 when no item
 fails but at least one item is unknown.
 
 DeepSeek is selectable with `--provider deepseek`; it uses
-`deepseek-v4.1-flash` by default and requires `DEEPSEEK_API_KEY` in the
-environment. No DeepSeek request is made without that key.
+`deepseek-flash` by default, caps each completion at 1024 tokens, and requires
+`DEEPSEEK_API_KEY` in the environment. No DeepSeek request is made without
+that key.
 
 To inspect the newest trace locally during development:
 

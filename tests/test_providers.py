@@ -69,11 +69,28 @@ def test_deepseek_sends_json_mode_and_bearer_key() -> None:
     payload = json.loads(request.data)
     assert request.get_method() == "POST"
     assert request.full_url == "https://api.deepseek.com/chat/completions"
-    assert payload["model"] == "deepseek-v4.1-flash"
+    assert payload["model"] == "deepseek-flash"
     assert payload["stream"] is False
     assert payload["response_format"] == {"type": "json_object"}
+    assert payload["max_tokens"] == 1024
     assert request.get_header("Authorization") == "Bearer secret"
     assert provider.usage == TokenUsage(prompt=11, completion=5)
+
+
+def test_deepseek_preserves_explicit_model_override() -> None:
+    response = _Response(
+        {
+            "choices": [{"message": {"content": '{"action": {"kind": "stop"}}'}}],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+        }
+    )
+    with patch("urllib.request.urlopen", return_value=response) as opened:
+        provider = DeepSeekProvider(api_key="secret", model="custom-model")
+        provider.complete_json("system", "user")
+
+    payload = json.loads(opened.call_args.args[0].data)
+    assert payload["model"] == "custom-model"
+    assert payload["max_tokens"] == 1024
 
 
 def test_provider_rejects_empty_content_and_chains_cause() -> None:

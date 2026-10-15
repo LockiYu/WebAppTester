@@ -129,7 +129,7 @@ def run(args: argparse.Namespace) -> tuple[int, Path]:
         return 2, report
 
     try:
-        model = args.model or ("deepseek-v4.1-flash" if args.provider == "deepseek" else "qwen2.5:3b")
+        model = args.model or ("deepseek-flash" if args.provider == "deepseek" else "qwen2.5:3b")
         if args.provider == "deepseek":
             provider = DeepSeekProvider(model=model)
         else:
