@@ -161,6 +161,7 @@ def test_snapshot_redacts_inline_values_for_all_input_roles():
             '- searchbox "Search: docs": SEARCH_SECRET [ref=e3]',
             '- spinbutton "Age" [ref=e4]: 42',
             '- combobox "Country": COUNTRY_SECRET [ref=e5]',
+            '- slider "Volume" [ref=e7]: SLIDER_SECRET',
             '- button "Save: now" [ref=e6]',
             '- text: Visible static text',
         ]
@@ -173,9 +174,11 @@ def test_snapshot_redacts_inline_values_for_all_input_roles():
     assert "SEARCH_SECRET" not in gateway.latest_snapshot
     assert "COUNTRY_SECRET" not in gateway.latest_snapshot
     assert "42" not in gateway.latest_snapshot
+    assert "SLIDER_SECRET" not in gateway.latest_snapshot
     assert '- searchbox "Search: docs": <redacted> [ref=e3]' in gateway.latest_snapshot
     assert '- spinbutton "Age" [ref=e4]: <redacted>' in gateway.latest_snapshot
     assert '- combobox "Country": <redacted> [ref=e5]' in gateway.latest_snapshot
+    assert '- slider "Volume" [ref=e7]: <redacted>' in gateway.latest_snapshot
     assert '- button "Save: now" [ref=e6]' in gateway.latest_snapshot
     assert "- text: Visible static text" in gateway.latest_snapshot
 

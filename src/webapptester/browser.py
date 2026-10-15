@@ -10,7 +10,7 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-from .schema import Action, Observation
+from .schema import Action, Observation, ObservationRegion
 
 if TYPE_CHECKING:
     from .store import RunStore
@@ -103,7 +103,51 @@ class BrowserGateway:
         text = self.page.locator("body").inner_text()[:20_000]
         screenshot = self.page.screenshot(full_page=True)
         self._capture_snapshot()
+        regions = self._capture_regions()
+        if regions:
+            return store.save_observation(
+                url=url, text=text, screenshot=screenshot, regions=regions
+            )
+        # Keep lightweight gateways and legacy stores source-compatible when a
+        # page exposes no capturable semantic regions.
         return store.save_observation(url=url, text=text, screenshot=screenshot)
+
+    def _capture_regions(self) -> tuple[ObservationRegion, ...]:
+        """Capture standard semantic DOM regions without target-specific selectors.
+
+        The body remains the legacy observation source.  Region captures are
+        additive and are only used when a checkpoint explicitly asks for a
+        scoped assertion.  If a page exposes no semantic regions, callers must
+        conservatively leave that assertion UNKNOWN.
+        """
+
+        candidates = (
+            ("main", "main"),
+            ("aside", "aside"),
+            ("role-main", '[role="main"]'),
+            ("role-complementary", '[role="complementary"]'),
+            ("evidence-region", "[data-evidence-region]"),
+        )
+        regions: list[ObservationRegion] = []
+        seen_text: set[str] = set()
+        for region_id, selector in candidates:
+            try:
+                locator = self.page.locator(selector)
+                count = locator.count()
+            except Exception:
+                continue
+            for index in range(count):
+                try:
+                    target = locator.nth(index) if count > 1 else locator
+                    text = target.inner_text()[:20_000]
+                except Exception:
+                    continue
+                if not isinstance(text, str) or not text.strip() or text in seen_text:
+                    continue
+                seen_text.add(text)
+                suffix = f"[{index}]" if count > 1 else ""
+                regions.append(ObservationRegion(f"{region_id}{suffix}", text, selector))
+        return tuple(regions)
 
     def _dispatch(self, action: Action) -> None:
         if action.kind == "goto":
@@ -183,7 +227,7 @@ _REF_LOCATOR = re.compile(r"^ref=(e\d+)$")
 _REF = re.compile(r"\[ref=(e\d+)\]")
 _SNAPSHOT_VALUE = re.compile(r"^(?P<prefix>\s*-\s*/value:\s*).*$", re.IGNORECASE)
 _INPUT_ROLE_LINE = re.compile(
-    r"^\s*-\s*(?:textbox|searchbox|combobox|spinbutton)\b",
+    r"^\s*-\s*(?:textbox|searchbox|combobox|spinbutton|slider)\b",
     re.IGNORECASE,
 )
 _REF_TOKEN = re.compile(r"\[ref=e\d+\]")
