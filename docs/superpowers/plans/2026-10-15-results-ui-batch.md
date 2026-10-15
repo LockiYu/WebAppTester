@@ -14,7 +14,7 @@
 - The dashboard reads only files under the configured local `runs/` root. Never accept a browser-supplied arbitrary path for a screenshot or Trace.
 - Run artifacts are read-only in the dashboard. A corrupt or incomplete run is shown as unavailable, not silently treated as PASS.
 - Batch execution is sequential. A failed item does not prevent later items from running; its status remains FAIL or UNKNOWN according to its own report.
-- Never include action input values, local credentials, or environment secrets in UI exports or batch summaries.
+- Never include action input values, local credentials, or environment secrets in structured UI fields, JSON/JSONL exports, or batch summaries. Raw screenshots and Playwright Trace are page evidence and may themselves contain sensitive page content; expose them only in the loopback-bound local dashboard after an explicit user reveal with a clear warning. Do not claim raw evidence has been redacted.
 - Keep the existing course PPT and markdown files untracked and unstaged.
 
 ---
@@ -39,9 +39,9 @@
 
 - [ ] **Step 1: Write failing tests.** Use `streamlit.testing.v1.AppTest.from_file(...)` on a fixture `runs/` root. Assert one PASS and one FAIL/UNKNOWN run appear, selected run shows status, reason, steps, token counts and per-checkpoint evidence, and a missing screenshot/Trace is labelled unavailable without an exception. Check the empty-root state. Do not assert Streamlit's internal HTML.
 - [ ] **Step 2: Verify red.** Run `.venv/bin/python -m pytest tests/test_dashboard.py -q`; expect missing dashboard module or missing UI dependency.
-- [ ] **Step 3: Implement.** Parse `--runs-root` only in the `__main__` entrypoint. In `render`, show a history selector/table and selected run summary with `st.metric`, evidence rows with observation IDs and quotes, action timeline, associated screenshots with `st.image`, and download buttons for `report.json`, `events.jsonl`, and `trace.zip` only when `artifact_path` accepts them. Use `st.warning` for missing artifacts. Keep the page read-only and label scripted runs distinctly when metadata is unavailable; never claim every PASS came from an LLM.
+- [ ] **Step 3: Implement.** Parse `--runs-root` only in the `__main__` entrypoint. In `render`, show a history selector/table and selected run summary with `st.metric`, evidence rows with observation IDs and quotes, action timeline, and download buttons for redacted `report.json` and `events.jsonl` only when `artifact_path` accepts them. Show associated screenshots with `st.image` and offer the raw `trace.zip` download only after the user selects an explicit reveal control warning that raw page evidence may contain sensitive data. Use `st.warning` for missing artifacts. Keep the page read-only and label source as unknown when metadata is unavailable; never infer a scripted run merely from zero token usage.
 - [ ] **Step 4: Verify green.** Install `.venv/bin/pip install -e '.[test,ui]'`, then run `.venv/bin/python -m pytest tests/test_dashboard.py -q` and the full suite. Start Streamlit locally and verify the PASS and FAIL demo reports render without Python exceptions.
-- [ ] **Step 5: Document and commit.** README must give the install/start command, `http://127.0.0.1:8501`, and explain that `runs/` is local and ignored by Git. Commit only the four named files with `git commit -m "feat: view run evidence in Streamlit"`.
+- [ ] **Step 5: Document and commit.** README must give the install/start command bound to `127.0.0.1`, `http://127.0.0.1:8501`, the raw-evidence reveal warning, and explain that `runs/` is local and ignored by Git. Commit only the four named files with `git commit -m "feat: view run evidence in Streamlit"`.
 
 ### Task 3: Sequential batch CLI and summary export
 
