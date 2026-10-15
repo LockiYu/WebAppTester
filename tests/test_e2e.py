@@ -10,6 +10,7 @@ from urllib.request import urlopen
 
 from playwright.sync_api import Playwright, sync_playwright
 
+import webapptester.cli as cli
 from webapptester.browser import BrowserGateway
 from webapptester.cli import _make_run_directory
 from webapptester.controller import Controller
@@ -90,6 +91,21 @@ def test_cli_output_creates_unique_timestamped_run_directories(tmp_path: Path) -
     assert first != second
     assert first.name.endswith("Z")
     assert second.name.endswith("Z")
+
+
+def test_cli_unexpected_exception_fallback_uses_timestamped_run_directory(
+    tmp_path: Path, monkeypatch
+) -> None:
+    base = tmp_path / "runs" / "demo"
+
+    def explode(args):
+        raise RuntimeError("forced test failure")
+
+    monkeypatch.setattr(cli, "run", explode)
+    assert cli.main(["--scenario", "x", "--url", "http://127.0.0.1", "--output", str(base)]) == 2
+    reports = list(base.glob("*/report.json"))
+    assert len(reports) == 1
+    assert reports[0].parent.parent == base
 
 
 def _start_demo(port: int) -> subprocess.Popen[str]:

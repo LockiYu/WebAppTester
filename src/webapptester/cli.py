@@ -225,7 +225,7 @@ def main(argv: list[str] | None = None) -> int:
         return status
     except Exception as error:
         # Keep a persistent report for unexpected setup errors too.
-        output = Path(args.output)
+        output = _make_run_directory(Path(args.output))
         store = RunStore(output)
         report = _unknown_report(
             store,
