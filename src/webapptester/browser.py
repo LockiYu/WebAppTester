@@ -46,6 +46,9 @@ class BrowserGateway:
         set_default_timeout = getattr(page, "set_default_timeout", None)
         if set_default_timeout is not None:
             set_default_timeout(DEFAULT_ACTION_TIMEOUT_MS)
+        set_default_navigation_timeout = getattr(page, "set_default_navigation_timeout", None)
+        if set_default_navigation_timeout is not None:
+            set_default_navigation_timeout(DEFAULT_ACTION_TIMEOUT_MS)
 
     def act(self, action: Action) -> ActionResult:
         """Execute one action, counting failed browser attempts as steps."""
@@ -62,7 +65,7 @@ class BrowserGateway:
         self.steps += 1
         try:
             self._dispatch(action)
-        except Exception as error:
+        except (PlaywrightError, PlaywrightTimeoutError, TimeoutError) as error:
             # Playwright errors (including errors from test doubles) are
             # represented as an unsuccessful action result. They are not a
             # product verdict and must not escape as a test FAIL.

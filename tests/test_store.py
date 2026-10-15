@@ -34,9 +34,19 @@ def test_action_values_are_not_persisted(tmp_path):
         }
     )
     store.append_event({"kind": "fill", "locator": "#password", "value": "secret-2"})
+    store.append_event(
+        {
+            "actions": [
+                {"kind": "fill", "locator": "#password", "value": "secret-3"}
+            ],
+            "result": {
+                "action": {"kind": "fill", "locator": "#password", "value": "secret-4"}
+            },
+        }
+    )
 
     contents = (tmp_path / "events.jsonl").read_text(encoding="utf-8")
-    assert "secret" not in contents
+    assert all(secret not in contents for secret in ("secret", "secret-2", "secret-3", "secret-4"))
     assert "value" not in contents
 
 

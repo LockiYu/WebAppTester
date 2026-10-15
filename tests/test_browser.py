@@ -16,6 +16,9 @@ class _FakePage:
     def set_default_timeout(self, timeout):
         self.calls.append(("set_default_timeout", timeout))
 
+    def set_default_navigation_timeout(self, timeout):
+        self.calls.append(("set_default_navigation_timeout", timeout))
+
     def get_by_role(self, role, name):
         self.calls.append(("get_by_role", role, name))
         return _FailingLocator()
@@ -24,6 +27,8 @@ class _FakePage:
 def test_failed_click_consumes_a_browser_step():
     page = _FakePage()
     gateway = BrowserGateway(page, max_steps=2)
+
+    assert ("set_default_navigation_timeout", 5000) in page.calls
 
     result = gateway.act(Action(kind="click", locator="role=button;name=Create"))
 

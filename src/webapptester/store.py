@@ -103,20 +103,24 @@ def _sanitize_event(event: dict[str, Any]) -> dict[str, Any]:
 
     if not isinstance(event, dict):
         raise TypeError("event must be a dictionary")
-    is_flat_action = event.get("kind") in ACTION_KINDS
-    sanitized: dict[str, Any] = {}
-    for key, value in event.items():
-        if is_flat_action and key == "value":
-            continue
-        if key == "action" and isinstance(value, dict):
-            sanitized[key] = {
-                nested_key: nested_value
-                for nested_key, nested_value in value.items()
-                if nested_key != "value"
-            }
-        else:
-            sanitized[key] = value
-    return sanitized
+    return _sanitize_value(event)
+
+
+def _sanitize_value(value: Any, *, action_context: bool = False) -> Any:
+    """Recursively copy JSON-shaped values while removing action inputs."""
+
+    if isinstance(value, dict):
+        is_action = action_context or value.get("kind") in ACTION_KINDS
+        return {
+            key: _sanitize_value(item, action_context=is_action or key == "action")
+            for key, item in value.items()
+            if not (is_action and key == "value")
+        }
+    if isinstance(value, list):
+        return [_sanitize_value(item, action_context=action_context) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_value(item, action_context=action_context) for item in value)
+    return value
 
 
 __all__ = ["RunStore"]
