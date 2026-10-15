@@ -42,6 +42,10 @@ class Checkpoint:
     source: str
     expected: str
     required: bool = True
+    # ``page`` preserves the original body-text contract.  More specific
+    # scopes (for example ``main`` or ``aside``) require region-grounded
+    # evidence before they can contribute to a PASS verdict.
+    scope: str = "page"
 
     def __post_init__(self) -> None:
         _require_text(self.id, "checkpoint id")
@@ -49,6 +53,7 @@ class Checkpoint:
         _require_text(self.expected, "checkpoint expected")
         if type(self.required) is not bool:
             raise ValueError("checkpoint required must be a boolean")
+        _require_text(self.scope, "checkpoint scope")
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +79,7 @@ class Observation:
     text: str
     screenshot: str
     fingerprint: str
+    regions: tuple["ObservationRegion", ...] = ()
 
     def __post_init__(self) -> None:
         _require_text(self.id, "observation id")
@@ -81,6 +87,24 @@ class Observation:
         _require_text(self.text, "observation text", nonempty=False)
         _require_text(self.screenshot, "observation screenshot", nonempty=False)
         _require_text(self.fingerprint, "observation fingerprint", nonempty=False)
+        if not isinstance(self.regions, tuple) or not all(
+            isinstance(item, ObservationRegion) for item in self.regions
+        ):
+            raise ValueError("observation regions must be a tuple of ObservationRegion")
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationRegion:
+    """A separately captured DOM region available for scoped evidence."""
+
+    id: str
+    text: str
+    locator: str = ""
+
+    def __post_init__(self) -> None:
+        _require_text(self.id, "observation region id")
+        _require_text(self.text, "observation region text", nonempty=False)
+        _require_text(self.locator, "observation region locator", nonempty=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,12 +113,14 @@ class Evidence:
     observation_id: str
     quote: str
     status: str
+    region_id: str = ""
 
     def __post_init__(self) -> None:
         _require_text(self.checkpoint_id, "evidence checkpoint_id")
         _require_text(self.observation_id, "evidence observation_id")
         _require_text(self.quote, "evidence quote")
         _require_text(self.status, "evidence status")
+        _require_text(self.region_id, "evidence region_id", nonempty=False)
         if self.status not in EVIDENCE_STATUSES:
             raise ValueError(f"unsupported evidence status: {self.status!r}")
 
@@ -134,13 +160,15 @@ def parse_scenario(raw: dict[str, object]) -> Scenario:
 
 
 def parse_checkpoint(raw: dict[str, object]) -> Checkpoint:
-    values = _mapping(raw, {"id", "source", "expected", "required"})
+    values = _mapping(raw, {"id", "source", "expected", "required", "scope"})
     for key in ("id", "source", "expected"):
         if key not in values:
             raise ValueError(f"checkpoint requires {key}")
         _require_text(values[key], f"checkpoint {key}")
     if "required" in values and type(values["required"]) is not bool:
         raise ValueError("checkpoint required must be a boolean")
+    if "scope" in values and not isinstance(values["scope"], str):
+        raise ValueError("checkpoint scope must be a string")
     return Checkpoint(**values)
 
 
@@ -167,23 +195,46 @@ def parse_action(raw: dict[str, object]) -> Action:
 
 
 def parse_observation(raw: dict[str, object]) -> Observation:
-    values = _mapping(raw, {"id", "url", "text", "screenshot", "fingerprint"})
+    values = _mapping(raw, {"id", "url", "text", "screenshot", "fingerprint", "regions"})
     required = ("id", "url", "text", "screenshot", "fingerprint")
     if any(key not in values for key in required):
         raise ValueError("observation has missing required fields")
     for key in required:
         _require_text(values[key], key, nonempty=key in {"id", "url"})
+    if "regions" in values:
+        raw_regions = values["regions"]
+        if not isinstance(raw_regions, list):
+            raise ValueError("observation regions must be a list")
+        regions: list[ObservationRegion] = []
+        region_ids: set[str] = set()
+        for item in raw_regions:
+            if not isinstance(item, dict) or set(item) - {"id", "text", "locator"}:
+                raise ValueError("observation region has invalid fields")
+            if "id" not in item or "text" not in item:
+                raise ValueError("observation region has missing required fields")
+            region = ObservationRegion(
+                id=item["id"],
+                text=item["text"],
+                locator=item.get("locator", ""),
+            )
+            if region.id in region_ids:
+                raise ValueError("observation region IDs must be unique")
+            region_ids.add(region.id)
+            regions.append(region)
+        values["regions"] = tuple(regions)
     return Observation(**values)
 
 
 def parse_evidence(raw: dict[str, object]) -> Evidence:
-    values = _mapping(raw, {"checkpoint_id", "observation_id", "quote", "status"})
+    values = _mapping(raw, {"checkpoint_id", "observation_id", "quote", "status", "region_id"})
     required = ("checkpoint_id", "observation_id", "quote", "status")
     if any(key not in values for key in required):
         raise ValueError("evidence has missing required fields")
     for key in required:
         if not isinstance(values[key], str):
             raise ValueError(f"{key} must be a string")
+    if "region_id" in values and not isinstance(values["region_id"], str):
+        raise ValueError("region_id must be a string")
     return Evidence(**values)
 
 

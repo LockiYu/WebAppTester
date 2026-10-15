@@ -31,6 +31,7 @@ class RunRecord:
     observations: tuple[dict[str, object], ...]
     actions: tuple[dict[str, str], ...]
     trace: Path | None
+    checkpoints: tuple[dict[str, object], ...] = ()
 
 
 def list_runs(root: Path) -> tuple[RunRecord, ...]:
@@ -121,8 +122,9 @@ def load_run(root: Path, report_path: Path) -> RunRecord:
     token_usage = _parse_token_usage(raw["token_usage"])
     actions = _parse_actions(raw["actions"])
     observations = _parse_observations(raw["observations"])
+    checkpoints = _parse_checkpoints(raw.get("checkpoints", []))
     status, reason, evidence = _parse_verdict(raw["verdict"])
-    _validate_evidence(evidence, observations)
+    _validate_evidence(evidence, observations, checkpoints)
     _validate_verdict_consistency(status, evidence)
 
     directory = resolved_report.parent
@@ -138,8 +140,9 @@ def load_run(root: Path, report_path: Path) -> RunRecord:
         token_usage=token_usage,
         evidence=evidence,
         observations=observations,
-        actions=actions,
-        trace=None,
+            actions=actions,
+            trace=None,
+            checkpoints=checkpoints,
     )
     if trace_text:
         trace = artifact_path(root_path, record, trace_text)
@@ -152,8 +155,9 @@ def load_run(root: Path, report_path: Path) -> RunRecord:
             token_usage=record.token_usage,
             evidence=record.evidence,
             observations=record.observations,
-            actions=record.actions,
-            trace=trace,
+                actions=record.actions,
+                trace=trace,
+                checkpoints=record.checkpoints,
         )
     return record
 
@@ -217,17 +221,62 @@ def _parse_actions(raw: object) -> tuple[dict[str, str], ...]:
 def _parse_observations(raw: object) -> tuple[dict[str, object], ...]:
     if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
         raise ValueError("observations must be a list of dictionaries")
-    fields = frozenset({"id", "url", "text", "screenshot", "fingerprint"})
+    fields = frozenset({"id", "url", "text", "screenshot", "fingerprint", "regions"})
+    legacy_fields = frozenset({"id", "url", "text", "screenshot", "fingerprint"})
     observations: list[dict[str, object]] = []
     for item in raw:
-        if set(item) != fields:
+        if set(item) not in {fields, legacy_fields}:
             raise ValueError("observation has missing or unsupported fields")
         if any(not isinstance(value, str) for value in item.values()):
             raise ValueError("observation fields must be strings")
         if not item["id"].strip() or not item["url"].strip():
             raise ValueError("observation id and url must be nonempty")
+        regions = item.get("regions", [])
+        if not isinstance(regions, list) or not all(isinstance(region, dict) for region in regions):
+            raise ValueError("observation regions must be a list")
+        region_ids: set[str] = set()
+        for region in regions:
+            if set(region) != {"id", "text", "locator"}:
+                raise ValueError("observation region has missing or unsupported fields")
+            if any(not isinstance(value, str) for value in region.values()):
+                raise ValueError("observation region fields must be strings")
+            if not region["id"].strip() or region["id"] in region_ids:
+                raise ValueError("observation region IDs must be unique and nonempty")
+            region_ids.add(region["id"])
         observations.append(dict(item))
     return tuple(observations)
+
+
+def _parse_checkpoints(raw: object) -> tuple[dict[str, object], ...]:
+    if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
+        raise ValueError("checkpoints must be a list of dictionaries")
+    checkpoints: list[dict[str, object]] = []
+    ids: set[str] = set()
+    for item in raw:
+        allowed = {"id", "source", "expected", "required", "scope"}
+        if set(item) - allowed or not {"id", "source", "expected"}.issubset(item):
+            raise ValueError("checkpoint has missing or unsupported fields")
+        if any(not isinstance(item[key], str) for key in ("id", "source", "expected")):
+            raise ValueError("checkpoint text fields must be strings")
+        if type(item.get("required", True)) is not bool:
+            raise ValueError("checkpoint required must be a boolean")
+        scope = item.get("scope", "page")
+        if not isinstance(scope, str) or not scope.strip():
+            raise ValueError("checkpoint scope must be a nonempty string")
+        checkpoint = {
+            "id": item["id"],
+            "source": item["source"],
+            "expected": item["expected"],
+            "required": item.get("required", True),
+            "scope": scope,
+        }
+        if not checkpoint["id"] or not checkpoint["source"] or not checkpoint["expected"]:
+            raise ValueError("checkpoint fields must be nonempty")
+        if checkpoint["id"] in ids:
+            raise ValueError("checkpoint IDs must be unique")
+        ids.add(checkpoint["id"])
+        checkpoints.append(checkpoint)
+    return tuple(checkpoints)
 
 
 def _parse_verdict(raw: object) -> tuple[str, str, tuple[dict[str, str], ...]]:
@@ -242,7 +291,8 @@ def _parse_verdict(raw: object) -> tuple[str, str, tuple[dict[str, str], ...]]:
         raise ValueError("evidence must be a list of dictionaries")
     parsed: list[dict[str, str]] = []
     for item in evidence:
-        if set(item) != _EVIDENCE_FIELDS:
+        allowed_fields = _EVIDENCE_FIELDS | {"region_id"}
+        if set(item) - allowed_fields or not _EVIDENCE_FIELDS.issubset(item):
             raise ValueError("evidence has missing or unsupported fields")
         if any(not isinstance(key, str) or not isinstance(value, str) for key, value in item.items()):
             raise ValueError("evidence fields must be strings")
@@ -250,12 +300,14 @@ def _parse_verdict(raw: object) -> tuple[str, str, tuple[dict[str, str], ...]]:
             raise ValueError("evidence fields must be nonempty")
         if item["status"] not in _EVIDENCE_STATUSES:
             raise ValueError("evidence status is invalid")
-        parsed.append(dict(item))
+        parsed.append({**item, "region_id": item.get("region_id", "")})
     return status, reason, tuple(parsed)
 
 
 def _validate_evidence(
-    evidence: tuple[dict[str, str], ...], observations: tuple[dict[str, object], ...]
+    evidence: tuple[dict[str, str], ...],
+    observations: tuple[dict[str, object], ...],
+    checkpoints: tuple[dict[str, object], ...] = (),
 ) -> None:
     """Require every stored evidence claim to retain its observation provenance."""
 
@@ -284,6 +336,33 @@ def _validate_evidence(
             or item["quote"] not in text
         ):
             raise ValueError("evidence is not grounded in an observation")
+        checkpoint = next(
+            (candidate for candidate in checkpoints if candidate["id"] == checkpoint_id),
+            None,
+        )
+        if checkpoint is not None and checkpoint.get("scope", "page") != "page":
+            region_id = item.get("region_id", "")
+            regions = observation.get("regions", []) if observation is not None else []
+            region = next(
+                (candidate for candidate in regions if candidate.get("id") == region_id),
+                None,
+            )
+            if (
+                not isinstance(region_id, str)
+                or not region_id.strip()
+                or not isinstance(region, dict)
+                or not isinstance(region.get("text"), str)
+                or item["quote"] not in region["text"]
+            ):
+                raise ValueError("scoped evidence is not grounded in an observation region")
+
+    if checkpoints:
+        required_ids = {
+            str(item["id"]) for item in checkpoints if item.get("required", True) is True
+        }
+        evidenced_ids = {item["checkpoint_id"] for item in evidence}
+        if not required_ids.issubset(evidenced_ids):
+            raise ValueError("evidence is missing a required checkpoint")
 
 
 def _validate_verdict_consistency(

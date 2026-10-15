@@ -1,7 +1,7 @@
 import pytest
 
 from webapptester.roles import Executor, GapRequest, ModelOutputError, Planner, Verifier, VerificationResult
-from webapptester.schema import Action, Checkpoint, Observation, Scenario
+from webapptester.schema import Action, Checkpoint, Observation, ObservationRegion, Scenario
 
 
 class FakeProvider:
@@ -115,6 +115,43 @@ def test_verifier_accepts_only_quotes_from_observations() -> None:
     checkpoints = (Checkpoint("c1", "Create a project", "project exists", True),)
     evidence = Verifier(provider).verify(checkpoints, (_observation(),))
     assert evidence[0].status == "SAT"
+
+
+def test_verifier_rejects_body_only_sat_for_scoped_checkpoint() -> None:
+    provider = FakeProvider(
+        {
+            "evidence": [
+                {
+                    "checkpoint_id": "c1",
+                    "observation_id": "o1",
+                    "quote": "Project Alpha exists",
+                    "status": "SAT",
+                }
+            ]
+        },
+        {
+            "evidence": [
+                {
+                    "checkpoint_id": "c1",
+                    "observation_id": "o1",
+                    "quote": "Project Alpha exists",
+                    "status": "SAT",
+                }
+            ]
+        },
+    )
+    checkpoint = Checkpoint("c1", "Create a project", "project exists", True, "sidebar")
+    observation = Observation(
+        "o1",
+        "http://localhost",
+        "Project Alpha exists",
+        "shot.png",
+        "fingerprint",
+        (ObservationRegion("main", "Project Alpha exists", "main"),),
+    )
+
+    with pytest.raises(ModelOutputError):
+        Verifier(provider).verify((checkpoint,), (observation,))
 
 
 def test_verifier_rejects_unknown_observation_and_retries_once() -> None:

@@ -82,9 +82,13 @@ def _json(value: object) -> str:
 
 PLANNER_SYSTEM = """You are the Planner role in an evidence-gated Playwright tester.
 Return one JSON object with exactly this shape:
-{"checkpoints":[{"id":"c1","source":"exact quote from the scenario","expected":"visible state","required":true}]}
+{"checkpoints":[{"id":"c1","source":"exact quote from the scenario","expected":"visible state","required":true,"scope":"main"}]}
 Every source must be copied exactly from the scenario text. IDs must be distinct.
 The expected field describes visible page state. Required must be a JSON boolean.
+Scope identifies one independently observable page region. Use "page" only for a
+whole-page assertion. Split requirements that mention multiple locations into one
+checkpoint per location, each with its own non-page scope. Never use one checkpoint
+or one body-text quote to cover multiple locations.
 Do not return prose, actions, locators, code, or unsupported fields."""
 
 
@@ -105,9 +109,12 @@ The controller executes only the action object."""
 
 VERIFIER_SYSTEM = """You are the Verifier role in an evidence-gated Playwright tester.
 Return one JSON object with exactly this shape:
-{"evidence":[{"checkpoint_id":"c1","observation_id":"o1","quote":"copied visible text","status":"SAT"}]}
+{"evidence":[{"checkpoint_id":"c1","observation_id":"o1","quote":"copied visible text","status":"SAT","region_id":"main"}]}
 Each entry must reference a supplied checkpoint and observation. Copy quote verbatim
 from that observation's stored visible text. Status must be SAT, VIOLATED, or UNKNOWN.
+For a checkpoint with a non-page scope, region_id is required and must name one of
+the supplied observation regions; the quote must be copied from that region's text.
+Never claim SAT for a scoped checkpoint from body text alone.
 When required evidence is not available, optionally include
 {"gap_request":{"checkpoint_id":"c1","requested_evidence":"visible sidebar link",
 "suggested_location":"sidebar","estimated_action_cost":1}}.
@@ -139,11 +146,26 @@ class Planner:
                     raise TypeError("checkpoint must be an object")
                 if "required" not in item or type(item["required"]) is not bool:
                     raise ValueError("checkpoint required must be an explicit boolean")
+                if "scope" in item and not isinstance(item["scope"], str):
+                    raise ValueError("checkpoint scope must be a string")
             checkpoints = parse_checkpoints(raw_checkpoints)
             for checkpoint in checkpoints:
                 if checkpoint.source not in scenario.text:
                     raise ValueError(
                         f"checkpoint source is not an exact scenario quote: {checkpoint.source!r}"
+                    )
+            # A natural-language requirement explicitly spanning multiple
+            # locations must remain atomic.  This generic guard catches a
+            # planner that collapses a "both ... and ..." assertion into one
+            # page-scoped checkpoint while leaving ordinary legacy scenarios
+            # compatible with the default page scope.
+            lowered = scenario.text.casefold()
+            if "both" in lowered and " and " in lowered:
+                if len(checkpoints) < 2 or any(
+                    checkpoint.scope == "page" for checkpoint in checkpoints
+                ):
+                    raise ValueError(
+                        "multi-location scenario requires separately scoped checkpoints"
                     )
             return checkpoints
 
@@ -180,6 +202,7 @@ class Executor:
                     "source": checkpoint.source,
                     "expected": checkpoint.expected,
                     "required": checkpoint.required,
+                    "scope": checkpoint.scope,
                 }
                 for checkpoint in checkpoints
             ],
@@ -240,6 +263,7 @@ class Verifier:
                         "source": checkpoint.source,
                         "expected": checkpoint.expected,
                         "required": checkpoint.required,
+                        "scope": checkpoint.scope,
                     }
                     for checkpoint in checkpoints
                 ],
@@ -249,6 +273,10 @@ class Verifier:
                         "url": observation.url,
                         "text": observation.text,
                         "fingerprint": observation.fingerprint,
+                        "regions": [
+                            {"id": region.id, "text": region.text, "locator": region.locator}
+                            for region in observation.regions
+                        ],
                     }
                     for observation in observations
                 ],
@@ -282,6 +310,22 @@ class Verifier:
                     raise ValueError(
                         f"evidence quote is not copied from observation {item.observation_id}"
                     )
+                checkpoint = next(
+                    checkpoint for checkpoint in checkpoints if checkpoint.id == item.checkpoint_id
+                )
+                if checkpoint.scope != "page":
+                    if not item.region_id:
+                        raise ValueError(
+                            f"scoped checkpoint {checkpoint.id} requires region_id evidence"
+                        )
+                    region = next(
+                        (region for region in observation.regions if region.id == item.region_id),
+                        None,
+                    )
+                    if region is None or item.quote not in region.text:
+                        raise ValueError(
+                            f"evidence quote is not grounded in region {item.region_id}"
+                        )
             if "gap_request" not in raw:
                 return evidence
             gap_raw = raw["gap_request"]

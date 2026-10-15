@@ -4,7 +4,14 @@ import json
 from types import SimpleNamespace
 
 from webapptester.controller import Controller, verdict_from_evidence
-from webapptester.schema import Action, Checkpoint, Evidence, Observation, Scenario
+from webapptester.schema import (
+    Action,
+    Checkpoint,
+    Evidence,
+    Observation,
+    ObservationRegion,
+    Scenario,
+)
 
 
 def _checkpoint(identifier: str = "c1", required: bool = True) -> Checkpoint:
@@ -17,6 +24,22 @@ def _observation(identifier: str = "o1", text: str = "visible state", fingerprin
 
 def _evidence(checkpoint_id: str = "c1", observation_id: str = "o1", status: str = "SAT", quote: str = "visible state") -> Evidence:
     return Evidence(checkpoint_id, observation_id, quote, status)
+
+
+def _scoped_observation(
+    *, dashboard: str = "Dashboard project: Course Test", sidebar: str = "Sidebar project: Course Test"
+) -> Observation:
+    return Observation(
+        "o-scoped",
+        "https://example.test",
+        f"{dashboard}\n{sidebar}",
+        "shot.png",
+        "scoped",
+        (
+            ObservationRegion("dashboard", dashboard, "main"),
+            ObservationRegion("sidebar", sidebar, "aside"),
+        ),
+    )
 
 
 def test_all_required_sat_evidence_from_observations_passes() -> None:
@@ -68,6 +91,51 @@ def test_direct_violated_quote_is_fail() -> None:
     )
 
     assert verdict.status == "FAIL"
+
+
+def test_one_location_cannot_pass_a_two_region_assertion() -> None:
+    checkpoints = (
+        Checkpoint("dashboard", "appears on dashboard", "Course Test", True, "dashboard"),
+        Checkpoint("sidebar", "appears in sidebar", "Course Test", True, "sidebar"),
+    )
+    observation = Observation(
+        "o-one",
+        "https://example.test",
+        "Dashboard project: Course Test",
+        "shot.png",
+        "one",
+        (ObservationRegion("dashboard", "Dashboard project: Course Test", "main"),),
+    )
+    evidence = (
+        Evidence("dashboard", "o-one", "Course Test", "SAT", "dashboard"),
+        # A body quote without a captured sidebar region is deliberately not
+        # enough to satisfy the second assertion.
+        Evidence("sidebar", "o-one", "Course Test", "SAT"),
+    )
+
+    assert verdict_from_evidence(checkpoints, evidence, (observation,)).status == "UNKNOWN"
+
+
+def test_missing_project_cannot_pass_scoped_checkpoint() -> None:
+    checkpoint = Checkpoint("dashboard", "project appears", "Course Test", True, "dashboard")
+    observation = _scoped_observation(dashboard="Dashboard project: Other")
+    evidence = Evidence("dashboard", observation.id, "Course Test", "SAT", "dashboard")
+
+    assert verdict_from_evidence((checkpoint,), (evidence,), (observation,)).status == "UNKNOWN"
+
+
+def test_both_scoped_locations_can_pass() -> None:
+    observation = _scoped_observation()
+    checkpoints = (
+        Checkpoint("dashboard", "appears on dashboard", "Course Test", True, "dashboard"),
+        Checkpoint("sidebar", "appears in sidebar", "Course Test", True, "sidebar"),
+    )
+    evidence = (
+        Evidence("dashboard", observation.id, "Course Test", "SAT", "dashboard"),
+        Evidence("sidebar", observation.id, "Course Test", "SAT", "sidebar"),
+    )
+
+    assert verdict_from_evidence(checkpoints, evidence, (observation,)).status == "PASS"
 
 
 class _FakePlanner:
@@ -169,6 +237,24 @@ class _GroundedVerifier:
         return ()
 
 
+class _AliasedExecutor:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def next_action(
+        self,
+        scenario,
+        checkpoints,
+        observation,
+        history,
+        gap=None,
+        latest_snapshot="",
+        **kwargs,
+    ):
+        self.calls.append((gap, latest_snapshot, kwargs))
+        return Action("stop")
+
+
 class _RaisingBrowser(_FakeBrowser):
     def act(self, action):
         self.steps += 1
@@ -210,6 +296,30 @@ def test_action_timeout_alone_is_unknown_and_redacts_action_value() -> None:
     assert "secret-value" not in json.dumps(store.events)
 
 
+def test_controller_report_persists_checkpoint_definitions() -> None:
+    store = _FakeStore()
+    checkpoint = Checkpoint("dashboard", "appears on dashboard", "Course Test", True, "dashboard")
+    controller = Controller(
+        _FakePlanner((checkpoint,)),
+        _FakeExecutor([Action("stop")]),
+        _FakeVerifier(),
+        _FakeBrowser(),
+        store,
+    )
+
+    controller.run(_scenario())
+
+    assert store.report["checkpoints"] == [
+        {
+            "id": "dashboard",
+            "source": "appears on dashboard",
+            "expected": "Course Test",
+            "required": True,
+            "scope": "dashboard",
+        }
+    ]
+
+
 def test_browser_exception_after_reserving_step_is_appended_without_secret() -> None:
     store = _FakeStore()
     browser = _RaisingBrowser()
@@ -229,6 +339,48 @@ def test_browser_exception_after_reserving_step_is_appended_without_secret() -> 
     event_text = json.dumps(store.events)
     assert "secret-value" not in event_text
     assert "must not be persisted" not in event_text
+
+
+def test_nonrecoverable_action_result_skips_verifier_after_observing_failure() -> None:
+    store = _FakeStore()
+    verifier = _GroundedVerifier()
+    browser = _FakeBrowser(success=False)
+
+    verdict = Controller(
+        _FakePlanner((_checkpoint(),)),
+        _FakeExecutor([Action("click", "#button")]),
+        verifier,
+        browser,
+        store,
+    ).run(_scenario())
+
+    assert verdict.status == "UNKNOWN"
+    assert verifier.calls == 0
+    assert browser.steps == 1
+    assert browser.observations == 2
+    assert store.events[0]["error_class"] == "TimeoutError"
+
+
+def test_explicit_executor_aliases_win_over_kwargs_fallback() -> None:
+    browser = SimpleNamespace(latest_snapshot="current snapshot")
+    executor = _AliasedExecutor()
+    controller = Controller(
+        _FakePlanner((_checkpoint(),)), executor, _FakeVerifier(), browser, _FakeStore()
+    )
+
+    action = controller._next_action(
+        _scenario(),
+        (_checkpoint(),),
+        _observation(),
+        (),
+        None,
+        failure_hint="ambiguous_locator",
+    )
+
+    assert action.kind == "stop"
+    assert executor.calls == [
+        (None, "current snapshot", {"failure_hint": "ambiguous_locator"})
+    ]
 
 
 def test_ambiguous_locator_recovers_with_fresh_snapshot_and_grounded_pass() -> None:

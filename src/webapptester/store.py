@@ -10,7 +10,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from .schema import ACTION_KINDS, Observation
+from .schema import ACTION_KINDS, Observation, ObservationRegion
 
 
 class RunStore:
@@ -32,7 +32,13 @@ class RunStore:
             handle.write(json.dumps(safe_event, ensure_ascii=False))
             handle.write("\n")
 
-    def save_observation(self, url: str, text: str, screenshot: bytes) -> Observation:
+    def save_observation(
+        self,
+        url: str,
+        text: str,
+        screenshot: bytes,
+        regions: tuple[ObservationRegion, ...] = (),
+    ) -> Observation:
         number = self._next_observation_number
         self._next_observation_number += 1
         observation_id = f"o{number}"
@@ -45,6 +51,7 @@ class RunStore:
             text=text,
             screenshot=str(screenshot_path),
             fingerprint=fingerprint,
+            regions=regions,
         )
         event = asdict(observation)
         event["type"] = "observation"
