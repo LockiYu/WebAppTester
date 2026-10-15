@@ -1,0 +1,26 @@
+[
+  {
+    "scenario": "Official example: In the dashboard click Add project, enter the project name Course Test and confirm, then check the new project appears on both dashboard and sidebar.",
+    "url": "http://127.0.0.1:3001/",
+    "provider": "ollama",
+    "model": "qwen2.5:3b",
+    "storage_state": "runs/4gaboards-local/auth.json",
+    "max_steps": 35
+  },
+  {
+    "scenario": "Local read-only smoke: open the authenticated dashboard and verify the Add Project control is visible; do not create or modify data.",
+    "url": "http://127.0.0.1:3001/",
+    "provider": "ollama",
+    "model": "qwen2.5:3b",
+    "storage_state": "runs/4gaboards-local/auth.json",
+    "max_steps": 35
+  },
+  {
+    "scenario": "Local read-only smoke: open the authenticated dashboard and verify the existing project list is visible in both the dashboard and sidebar; do not create or modify data.",
+    "url": "http://127.0.0.1:3001/",
+    "provider": "ollama",
+    "model": "qwen2.5:3b",
+    "storage_state": "runs/4gaboards-local/auth.json",
+    "max_steps": 35
+  }
+]

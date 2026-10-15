@@ -110,6 +110,45 @@ batch summaries:
 ]
 ```
 
+The 4gaBoards scenario manifest is at
+`examples/4gaboards/scenarios.json`. It contains the one supplied course
+example for `Course Test` and two clearly labelled local read-only smoke
+scenarios. Every item targets the isolated port and references the ignored
+`runs/4gaboards-local/auth.json` state file. Run the supplied course example
+once only; use a fresh fixture or a unique local name for later creation
+checks.
+
+The deterministic creation check is opt-in because it creates one uniquely
+named local project and records raw evidence:
+
+```sh
+WEBAPPTESTER_4GA_SMOKE=1 \
+  .venv/bin/python -m pytest tests/test_4gaboards_smoke.py -q
+```
+
+It writes a report, PNG observations under
+`runs/4gaboards-local/deterministic-smoke/screenshots/`, and a Playwright
+`trace.zip` in that ignored directory. The check uses at most 12 browser
+actions and asserts the new project independently in the dashboard list and
+sidebar.
+
+To run the supplied model scenario once after the deterministic check, keep
+the private storage state local and inspect the persisted report path:
+
+```sh
+PYTHONPATH=src .venv/bin/webapptester \
+  --scenario "Official example: In the dashboard click Add project, enter the project name Course Test and confirm, then check the new project appears on both dashboard and sidebar." \
+  --url http://127.0.0.1:3001/ \
+  --provider ollama --model qwen2.5:3b \
+  --storage-state runs/4gaboards-local/auth.json \
+  --output runs/4gaboards-local/course-test
+```
+
+Keep the model's PASS, FAIL, or UNKNOWN result as reported. A model planning
+or provider failure is an UNKNOWN execution result and does not establish a
+4gaBoards failure. Do not repeat `Course Test` creation against the same
+fixture.
+
 Run the tests with:
 
 ```sh
