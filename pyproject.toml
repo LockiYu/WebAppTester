@@ -16,8 +16,5 @@ test = [
     "pytest>=8,<10",
 ]
 
-[project.scripts]
-webapptester = "webapptester.cli:main"
-
 [tool.setuptools.packages.find]
 where = ["src"]
