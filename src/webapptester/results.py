@@ -227,7 +227,10 @@ def _parse_observations(raw: object) -> tuple[dict[str, object], ...]:
     for item in raw:
         if set(item) not in {fields, legacy_fields}:
             raise ValueError("observation has missing or unsupported fields")
-        if any(not isinstance(value, str) for value in item.values()):
+        if any(
+            not isinstance(item[key], str)
+            for key in ("id", "url", "text", "screenshot", "fingerprint")
+        ):
             raise ValueError("observation fields must be strings")
         if not item["id"].strip() or not item["url"].strip():
             raise ValueError("observation id and url must be nonempty")

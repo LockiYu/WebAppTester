@@ -79,6 +79,38 @@ def test_list_runs_returns_valid_history_newest_first_and_preserves_fields(tmp_p
     assert runs[0].trace == (newer / "trace.zip").resolve()
 
 
+def test_scoped_checkpoint_and_region_metadata_are_loaded(tmp_path: Path) -> None:
+    report = _report(status="PASS")
+    report["checkpoints"] = [
+        {
+            "id": "dashboard",
+            "source": "appears on dashboard",
+            "expected": "Course Test",
+            "required": True,
+            "scope": "dashboard",
+        }
+    ]
+    report["observations"][0]["text"] = "Course Test"
+    report["observations"][0]["regions"] = [
+        {"id": "dashboard", "text": "Course Test", "locator": "main"}
+    ]
+    report["verdict"]["evidence"] = [
+        {
+            "checkpoint_id": "dashboard",
+            "observation_id": "o1",
+            "quote": "Course Test",
+            "status": "SAT",
+            "region_id": "dashboard",
+        }
+    ]
+    report_path = _write_report(tmp_path / "run", report)
+
+    run = load_run(tmp_path, report_path)
+
+    assert run.checkpoints[0]["scope"] == "dashboard"
+    assert run.observations[0]["regions"][0]["id"] == "dashboard"
+
+
 def test_corrupt_and_incomplete_reports_are_unavailable(tmp_path: Path) -> None:
     valid = tmp_path / "valid"
     corrupt = tmp_path / "corrupt"
