@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import stat
 import sys
 import time
 from datetime import datetime, timezone
@@ -29,6 +30,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", help="Provider model (defaults to qwen2.5:3b or DeepSeek flash)")
     parser.add_argument("--output", type=Path, default=Path("runs/demo"))
     parser.add_argument("--max-steps", type=int, default=MAX_STEPS)
+    parser.add_argument(
+        "--storage-state",
+        type=Path,
+        help="Existing Playwright storage-state file for the new browser context",
+    )
     return parser
 
 
@@ -79,6 +85,22 @@ def _launch_chromium(chromium: Any) -> Any:
             raise bundled_error
 
 
+def _validated_storage_state(value: object) -> Path | None:
+    """Return an existing regular storage-state path without reading it."""
+
+    if value is None:
+        return None
+    try:
+        path = Path(value)
+        if not path.is_file():
+            return None
+        if not stat.S_ISREG(path.stat().st_mode):
+            return None
+    except (OSError, TypeError, ValueError, RuntimeError):
+        return None
+    return path
+
+
 def run(args: argparse.Namespace) -> tuple[int, Path]:
     started = time.monotonic()
     output = _make_run_directory(Path(args.output))
@@ -93,6 +115,17 @@ def run(args: argparse.Namespace) -> tuple[int, Path]:
             reason="invalid max_steps",
         )
         print(f"UNKNOWN: invalid max_steps; report={report}", file=sys.stderr)
+        return 2, report
+
+    storage_state = _validated_storage_state(getattr(args, "storage_state", None))
+    if getattr(args, "storage_state", None) is not None and storage_state is None:
+        report = _unknown_report(
+            store,
+            trace_path=trace_path,
+            started=started,
+            reason="storage state path is missing or invalid",
+        )
+        print("UNKNOWN: storage state path is missing or invalid; report={report}".format(report=report), file=sys.stderr)
         return 2, report
 
     try:
@@ -124,7 +157,10 @@ def run(args: argparse.Namespace) -> tuple[int, Path]:
     try:
         with sync_playwright() as playwright:
             browser = _launch_chromium(playwright.chromium)
-            context = browser.new_context()
+            context_options: dict[str, str] = {}
+            if storage_state is not None:
+                context_options["storage_state"] = str(storage_state)
+            context = browser.new_context(**context_options)
             context.tracing.start(screenshots=True, snapshots=True, sources=True)
             trace_started = True
             try:

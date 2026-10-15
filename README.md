@@ -76,6 +76,40 @@ docker compose --env-file runs/4gaboards-local/instance.env \
 The generated env file and Docker volumes are local-only. Keep the env file
 private and do not commit it.
 
+After the fixture is healthy, create a private browser login state in a
+separate Playwright context:
+
+```sh
+.venv/bin/python scripts/bootstrap_4gaboards_auth.py
+```
+
+The command reads the local first-run credentials without printing them,
+confirms the authenticated dashboard, and writes
+`runs/4gaboards-local/auth.json` with mode `0600`. Use that state for a single
+scenario with `--storage-state`:
+
+```sh
+.venv/bin/webapptester \
+  --scenario "Open the dashboard" \
+  --url http://127.0.0.1:3001/ \
+  --storage-state runs/4gaboards-local/auth.json \
+  --output runs/4gaboards-local/scenarios
+```
+
+Batch items may also include a local `storage_state` path. The state is loaded
+into each new browser context and is never copied into reports, events, or
+batch summaries:
+
+```json
+[
+  {
+    "scenario": "Open the dashboard",
+    "url": "http://127.0.0.1:3001/",
+    "storage_state": "runs/4gaboards-local/auth.json"
+  }
+]
+```
+
 Run the tests with:
 
 ```sh

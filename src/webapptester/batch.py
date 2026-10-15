@@ -17,7 +17,7 @@ from . import cli
 from .browser import MAX_STEPS
 from .results import load_run
 
-_ALLOWED_KEYS = frozenset({"scenario", "url", "provider", "model", "max_steps"})
+_ALLOWED_KEYS = frozenset({"scenario", "url", "provider", "model", "max_steps", "storage_state"})
 _PROVIDERS = frozenset({"ollama", "deepseek"})
 _STATUSES = ("PASS", "FAIL", "UNKNOWN")
 _SUMMARY_FIELDS = (
@@ -122,6 +122,11 @@ def load_batch(path: Path) -> tuple[dict[str, object], ...]:
             if type(max_steps) is not int or not 1 <= max_steps <= MAX_STEPS:
                 raise ValueError(f"batch item {index} max_steps must be an integer from 1 through {MAX_STEPS}")
 
+        if "storage_state" in value:
+            storage_state = value["storage_state"]
+            if not isinstance(storage_state, str) or not storage_state.strip():
+                raise ValueError(f"batch item {index} storage_state must be a nonempty string")
+
         items.append(dict(value))
     return tuple(items)
 
@@ -214,6 +219,7 @@ def run_batch(items: Iterable[dict[str, object]], output_root: Path) -> Path:
             model=model,
             output=batch_root / f"item-{index:03d}",
             max_steps=max_steps,
+            storage_state=item.get("storage_state"),
         )
         report_path: object = ""
         reason = ""

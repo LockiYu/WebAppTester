@@ -93,6 +93,23 @@ def test_cli_output_creates_unique_timestamped_run_directories(tmp_path: Path) -
     assert second.name.endswith("Z")
 
 
+def test_cli_parser_accepts_private_storage_state_path(tmp_path: Path) -> None:
+    storage_state = tmp_path / "auth.json"
+
+    args = cli._parser().parse_args(
+        [
+            "--scenario",
+            "dashboard",
+            "--url",
+            "http://127.0.0.1:3001/",
+            "--storage-state",
+            str(storage_state),
+        ]
+    )
+
+    assert args.storage_state == storage_state
+
+
 def test_cli_unexpected_exception_fallback_uses_timestamped_run_directory(
     tmp_path: Path, monkeypatch
 ) -> None:
