@@ -92,7 +92,11 @@ EXECUTOR_SYSTEM = """You are the Executor role in an evidence-gated Playwright t
 Return one JSON object with exactly this shape:
 {"action":{"kind":"click","locator":"role=button;name=Create","value":"","checkpoint_id":"c1"}}
 Choose exactly one allowed kind: goto, click, fill, select, scroll, drag, stop.
-Locators are CSS selectors or Playwright role locators formatted role=<role>;name=<name>.
+Locators are CSS selectors, Playwright role locators formatted role=<role>;name=<name>,
+or temporary accessibility refs formatted ref=eN. Use ref=eN only when that exact ref
+appears in the current accessibility snapshot; never invent a ref or reuse one from
+history. When a role/name matches more than one element, prefer the matching current
+snapshot ref so the controller can select the intended element.
 For drag, use source locator => destination locator. Do not return JavaScript, evaluate,
 arbitrary code, multiple actions, or prose. If the observation URL is about:blank or
 does not match the scenario URL, the next action MUST be goto with the scenario URL.
@@ -159,8 +163,15 @@ class Executor:
         observation: Observation,
         history: tuple[Action, ...],
         gap_request: GapRequest | object | None = None,
+        accessibility_snapshot: str = "",
+        failure_hint: str = "",
     ) -> Action:
         system = EXECUTOR_SYSTEM
+        prior_values = tuple(
+            action.value for action in history if isinstance(action.value, str) and action.value
+        )
+        observation_text = _redact_values(observation.text, prior_values)
+        sanitized_snapshot = _redact_values(accessibility_snapshot, prior_values)
         payload: dict[str, object] = {
             "scenario": {"text": scenario.text, "url": scenario.url},
             "checkpoints": [
@@ -175,8 +186,10 @@ class Executor:
             "observation": {
                 "id": observation.id,
                 "url": observation.url,
-                "text": observation.text,
+                "text": observation_text,
             },
+            "accessibility_snapshot": sanitized_snapshot,
+            "failure_hint": _safe_failure_hint(failure_hint),
             "history": [
                 {
                     "kind": action.kind,
@@ -325,7 +338,31 @@ def _gap_request_payload(gap_request: object) -> dict[str, object]:
     return values
 
 
+_SAFE_FAILURE_HINTS = frozenset({"ambiguous_locator"})
+
+
+def _safe_failure_hint(value: object) -> str:
+    """Allow only controller-produced, non-free-form recovery hints."""
+
+    if isinstance(value, str) and value in _SAFE_FAILURE_HINTS:
+        return value
+    return ""
+
+
+def _redact_values(text: str, values: tuple[str, ...]) -> str:
+    """Remove prior action input values before text reaches a model provider."""
+
+    if not text or not values:
+        return text
+    # Replace longer values first so a shorter value that is a prefix cannot
+    # leave the remainder of the longer secret in the prompt.
+    for value in sorted(set(values), key=len, reverse=True):
+        text = text.replace(value, "<redacted>")
+    return text
+
+
 _ROLE_LOCATOR = re.compile(r"^role=[^;\s]+;name=.+$")
+_REF_LOCATOR = re.compile(r"^ref=e\d+$")
 _FORBIDDEN_CODE_MARKERS = (
     "javascript:",
     "document.",
@@ -351,6 +388,8 @@ def _validate_locator(locator: str, kind: str) -> None:
         return
     if locator.startswith("role=") and not _ROLE_LOCATOR.fullmatch(locator):
         raise ValueError("role locator must use role=<role>;name=<name>")
+    if locator.startswith("ref=") and not _REF_LOCATOR.fullmatch(locator):
+        raise ValueError("ref locator must use ref=eN")
 
 
 __all__ = [
