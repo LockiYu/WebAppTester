@@ -23,7 +23,20 @@ def _history_label(run: RunRecord) -> str:
 
 
 def _safe_action(action: dict[str, str]) -> dict[str, str]:
-    return {key: action[key] for key in ("kind", "locator", "checkpoint_id") if key in action}
+    safe = {key: action[key] for key in ("kind", "locator", "checkpoint_id") if key in action}
+    if "locator" in safe:
+        safe["locator"] = _safe_locator(safe["locator"])
+    return safe
+
+
+def _safe_locator(locator: str) -> str:
+    """Avoid copying credential-shaped locator text into an export."""
+
+    normalized = "".join(character for character in locator.lower() if character.isalnum())
+    sensitive = ("password", "passwd", "token", "secret", "apikey", "credential", "authorization")
+    if any(term in normalized for term in sensitive):
+        return "[REDACTED LOCATOR]"
+    return locator
 
 
 def _safe_observation(observation: dict[str, object]) -> dict[str, object]:
@@ -68,16 +81,79 @@ def _report_export(root: Path, run: RunRecord) -> bytes | None:
 
 
 def _events_export(root: Path, run: RunRecord) -> bytes | None:
-    if artifact_path(root, run, "events.jsonl") is None:
+    events_path = artifact_path(root, run, "events.jsonl")
+    if events_path is None:
         return None
     events: list[dict[str, Any]] = []
-    events.extend(
-        {"type": "observation", **_safe_observation(item)} for item in run.observations
-    )
-    events.extend({"type": "action", "action": _safe_action(item)} for item in run.actions)
+    try:
+        lines = events_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return None
+    for line in lines:
+        try:
+            raw = json.loads(line)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        event = _safe_event(raw)
+        if event is not None:
+            events.append(event)
+    if not events:
+        return b""
     return ("\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n").encode(
         "utf-8"
     )
+
+
+def _safe_event(raw: object) -> dict[str, Any] | None:
+    """Keep the original event order while exporting a strict safe subset."""
+
+    if not isinstance(raw, dict) or not isinstance(raw.get("type"), str):
+        return None
+    event_type = raw["type"]
+    if event_type == "action":
+        action = raw.get("action")
+        if not isinstance(action, dict):
+            return None
+        safe_action: dict[str, str] = {}
+        for key in ("kind", "locator", "checkpoint_id"):
+            value = action.get(key)
+            if value is not None:
+                if not isinstance(value, str):
+                    return None
+                safe_action[key] = _safe_locator(value) if key == "locator" else value
+        if safe_action.get("kind") not in {"goto", "click", "fill", "select", "scroll", "drag", "stop"}:
+            return None
+        safe: dict[str, Any] = {"type": "action", "action": safe_action}
+        success = raw.get("success")
+        if success is not None:
+            if type(success) is not bool:
+                return None
+            safe["success"] = success
+        steps = raw.get("steps")
+        if steps is not None:
+            if type(steps) is not int or steps < 0:
+                return None
+            safe["steps"] = steps
+        error_class = raw.get("error_class")
+        if error_class is not None:
+            if (
+                not isinstance(error_class, str)
+                or not error_class.isidentifier()
+                or not error_class.endswith(("Error", "Exception"))
+            ):
+                return None
+            safe["error_class"] = error_class
+        return safe
+    if event_type == "observation":
+        safe_observation: dict[str, Any] = {"type": "observation"}
+        for key in ("id", "url", "text", "screenshot", "fingerprint"):
+            value = raw.get(key)
+            if value is not None:
+                if not isinstance(value, str):
+                    return None
+                safe_observation[key] = value
+        return safe_observation
+    return None
 
 
 def _trace_data(root: Path, run: RunRecord) -> bytes | None:
@@ -95,6 +171,8 @@ def _artifact_warning(label: str) -> None:
 
 
 def _render_downloads(root: Path, run: RunRecord, *, reveal_raw: bool) -> None:
+    if not reveal_raw:
+        return
     st.subheader("Downloads")
     columns = st.columns(3)
     download_specs = (
@@ -116,9 +194,6 @@ def _render_downloads(root: Path, run: RunRecord, *, reveal_raw: bool) -> None:
                 )
 
     with columns[2]:
-        if not reveal_raw:
-            st.caption("Raw trace hidden until evidence is revealed.")
-            return
         trace_data = _trace_data(root, run)
         if trace_data is None:
             _artifact_warning("trace.zip")
@@ -198,24 +273,26 @@ def _render_selected_run(root: Path, run: RunRecord) -> None:
         st.metric("Prompt tokens", run.token_usage.get("prompt", 0))
     with metrics[4]:
         st.metric("Completion tokens", run.token_usage.get("completion", 0))
-    st.write(f"Reason: {run.reason}")
     st.caption(f"Source: {_source_label(run)}")
-
-    _render_evidence(run)
-    _render_actions(run)
+    if run.status == "UNAVAILABLE":
+        st.warning("This run is unavailable because its persisted report is corrupt or incomplete.")
+        return
     reveal_raw = st.checkbox(
-        "Reveal raw page evidence",
-        help="Screenshots and Playwright traces may contain sensitive page content.",
+        "Reveal page-derived evidence and downloads",
+        help="Page text, URLs, screenshots, action locators, evidence quotes, and traces may contain sensitive data.",
         key=f"reveal-{run.directory}",
     )
     if reveal_raw:
         st.warning(
-            "Raw screenshots and Playwright Trace may contain sensitive page content."
+            "Page-derived evidence and downloads may contain sensitive page content."
         )
+        st.write(f"Reason: {run.reason}")
+        _render_evidence(run)
+        _render_actions(run)
         _render_screenshots(root, run)
+        _render_downloads(root, run, reveal_raw=True)
     else:
-        st.info("Raw screenshots and Trace are hidden until you reveal page evidence.")
-    _render_downloads(root, run, reveal_raw=reveal_raw)
+        st.info("Page-derived evidence and downloads are hidden until you reveal them.")
 
 
 def render(root: Path) -> None:

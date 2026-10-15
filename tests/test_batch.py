@@ -1,6 +1,7 @@
 import argparse
 import csv
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -55,14 +56,26 @@ def test_run_batch_is_sequential_and_exports_summary(tmp_path: Path, monkeypatch
     def fake_run(args: argparse.Namespace) -> tuple[int, Path]:
         calls.append(args)
         index = len(calls)
-        report = tmp_path / f"report-{index}.json"
+        report = args.output / "report.json"
+        report.parent.mkdir(parents=True, exist_ok=True)
+        status = ("PASS", "FAIL", "UNKNOWN")[index - 1]
+        observations = []
+        evidence = []
+        if status in {"PASS", "FAIL"}:
+            observations = [{"id": "o1", "url": "http://example", "text": "visible", "screenshot": "", "fingerprint": "f"}]
+            evidence = [{"checkpoint_id": "c1", "observation_id": "o1", "quote": "visible", "status": "SAT" if status == "PASS" else "VIOLATED"}]
         report.write_text(
             json.dumps(
                 {
                     "steps": index,
+                    "elapsed_seconds": 0.1,
+                    "token_usage": {"prompt": 0, "completion": 0},
+                    "actions": [],
+                    "observations": observations,
                     "verdict": {
-                        "status": ("PASS", "FAIL", "UNKNOWN")[index - 1],
+                        "status": status,
                         "reason": f"reason {index}",
+                        "evidence": evidence,
                     },
                 }
             ),
@@ -108,9 +121,17 @@ def test_summary_redacts_url_credentials_but_runner_receives_original(
 
     def fake_run(args: argparse.Namespace) -> tuple[int, Path]:
         seen_urls.append(args.url)
-        report = tmp_path / "report.json"
+        report = args.output / "report.json"
+        report.parent.mkdir(parents=True, exist_ok=True)
         report.write_text(
-            json.dumps({"steps": 1, "verdict": {"status": "PASS", "reason": "ok"}}),
+            json.dumps({
+                "steps": 1,
+                "elapsed_seconds": 0.1,
+                "token_usage": {"prompt": 0, "completion": 0},
+                "actions": [],
+                "observations": [{"id": "o1", "url": "http://example", "text": "visible", "screenshot": "", "fingerprint": "f"}],
+                "verdict": {"status": "PASS", "reason": "ok", "evidence": [{"checkpoint_id": "c1", "observation_id": "o1", "quote": "visible", "status": "SAT"}]},
+            }),
             encoding="utf-8",
         )
         return 0, report
@@ -133,6 +154,12 @@ def test_summary_redacts_url_credentials_but_runner_receives_original(
     with (root / "batch-summary.csv").open(newline="", encoding="utf-8") as handle:
         row = next(csv.DictReader(handle))
     assert row["url"] == summary["items"][0]["url"]
+
+
+def test_summary_redacts_fragment_credentials() -> None:
+    assert batch._redact_url(
+        "https://example.test/#section&access_token=secret&view=home&api_key=abc"
+    ) == "https://example.test/#section&access_token=REDACTED&view=home&api_key=REDACTED"
 
 
 def test_summary_replaces_malformed_url_without_leaking_credentials(
@@ -192,7 +219,17 @@ def test_unexpected_item_error_is_unknown_and_does_not_abort(
         calls.append(args.scenario)
         if args.scenario == "first":
             raise RuntimeError("setup failed")
-        return 1, tmp_path / "second-report.json"
+        report = args.output / "report.json"
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(json.dumps({
+            "steps": 1,
+            "elapsed_seconds": 0.1,
+            "token_usage": {"prompt": 0, "completion": 0},
+            "actions": [],
+            "observations": [{"id": "o1", "url": "http://example", "text": "visible", "screenshot": "", "fingerprint": "f"}],
+            "verdict": {"status": "FAIL", "reason": "failed", "evidence": [{"checkpoint_id": "c1", "observation_id": "o1", "quote": "visible", "status": "VIOLATED"}]},
+        }), encoding="utf-8")
+        return 1, report
 
     monkeypatch.setattr(batch.cli, "run", fake_run)
     root = batch.run_batch(
@@ -207,3 +244,52 @@ def test_unexpected_item_error_is_unknown_and_does_not_abort(
     assert calls == ["first", "second"]
     assert [item["status"] for item in summary["items"]] == ["UNKNOWN", "FAIL"]
     assert summary["items"][0]["reason"] == "runner raised RuntimeError"
+
+
+def test_batch_rejects_exit_code_report_status_contradiction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_run(args: argparse.Namespace) -> tuple[int, Path]:
+        report = args.output / "report.json"
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(json.dumps({
+            "steps": 1,
+            "elapsed_seconds": 0.1,
+            "token_usage": {"prompt": 0, "completion": 0},
+            "actions": [],
+            "observations": [{"id": "o1", "url": "http://example", "text": "visible", "screenshot": "", "fingerprint": "f"}],
+            "verdict": {"status": "FAIL", "reason": "failed", "evidence": [{"checkpoint_id": "c1", "observation_id": "o1", "quote": "visible", "status": "VIOLATED"}]},
+        }), encoding="utf-8")
+        return 0, report
+
+    monkeypatch.setattr(batch.cli, "run", fake_run)
+    root = batch.run_batch(({"scenario": "contradictory", "url": "http://one"},), tmp_path / "runs")
+    summary = json.loads((root / "batch-summary.json").read_text(encoding="utf-8"))
+
+    assert summary["items"][0]["status"] == "UNKNOWN"
+    assert summary["items"][0]["reason"] == "runner exit code disagrees with persisted report"
+
+
+def test_batch_rejects_stale_persisted_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_run(args: argparse.Namespace) -> tuple[int, Path]:
+        report = args.output / "report.json"
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(json.dumps({
+            "steps": 0,
+            "elapsed_seconds": 0.1,
+            "token_usage": {"prompt": 0, "completion": 0},
+            "actions": [],
+            "observations": [],
+            "verdict": {"status": "UNKNOWN", "reason": "old", "evidence": []},
+        }), encoding="utf-8")
+        os.utime(report, (1, 1))
+        return 2, report
+
+    monkeypatch.setattr(batch.cli, "run", fake_run)
+    root = batch.run_batch(({"scenario": "stale", "url": "http://one"},), tmp_path / "runs")
+    summary = json.loads((root / "batch-summary.json").read_text(encoding="utf-8"))
+
+    assert summary["items"][0]["status"] == "UNKNOWN"
+    assert summary["items"][0]["reason"] == "persisted report unavailable or invalid"

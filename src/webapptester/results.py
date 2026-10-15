@@ -36,9 +36,10 @@ class RunRecord:
 def list_runs(root: Path) -> tuple[RunRecord, ...]:
     """Load valid ``report.json`` files under *root*, newest first.
 
-    Invalid or incomplete reports are deliberately omitted.  This keeps a
-    partial write or corrupt artifact from looking like a successful run in a
-    consumer such as the results page.
+    Invalid or incomplete reports are represented as ``UNAVAILABLE`` records.
+    This keeps a partial write or corrupt artifact visible in history without
+    ever allowing it to look like a successful run in a consumer such as the
+    results page.
     """
 
     root_path = Path(root).resolve()
@@ -68,8 +69,25 @@ def list_runs(root: Path) -> tuple[RunRecord, ...]:
         try:
             records.append(load_run(root_path, report_path))
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
-            continue
+            records.append(_unavailable_record(report_path.parent))
     return tuple(records)
+
+
+def _unavailable_record(directory: Path) -> RunRecord:
+    """Create a safe placeholder for a corrupt or incomplete report."""
+
+    return RunRecord(
+        directory=directory,
+        status="UNAVAILABLE",
+        reason="report unavailable: corrupt or incomplete",
+        steps=0,
+        elapsed_seconds=0.0,
+        token_usage={"prompt": 0, "completion": 0},
+        evidence=(),
+        observations=(),
+        actions=(),
+        trace=None,
+    )
 
 
 def load_run(root: Path, report_path: Path) -> RunRecord:
@@ -105,8 +123,7 @@ def load_run(root: Path, report_path: Path) -> RunRecord:
     observations = _parse_observations(raw["observations"])
     status, reason, evidence = _parse_verdict(raw["verdict"])
     _validate_evidence(evidence, observations)
-    if status == "PASS":
-        _validate_pass_evidence(evidence, observations)
+    _validate_verdict_consistency(status, evidence)
 
     directory = resolved_report.parent
     trace_text = raw.get("trace_path")
@@ -246,7 +263,12 @@ def _validate_evidence(
         if observation_id in observation_by_id:
             duplicate_ids.add(observation_id)
         observation_by_id[observation_id] = observation
+    checkpoint_ids: set[str] = set()
     for item in evidence:
+        checkpoint_id = item["checkpoint_id"]
+        if checkpoint_id in checkpoint_ids:
+            raise ValueError("evidence contains duplicate checkpoint IDs")
+        checkpoint_ids.add(checkpoint_id)
         observation_id = item["observation_id"]
         observation = observation_by_id.get(observation_id)
         text = observation.get("text") if observation is not None else None
@@ -259,14 +281,18 @@ def _validate_evidence(
             raise ValueError("evidence is not grounded in an observation")
 
 
-def _validate_pass_evidence(
-    evidence: tuple[dict[str, str], ...], observations: tuple[dict[str, object], ...]
+def _validate_verdict_consistency(
+    status: str, evidence: tuple[dict[str, str], ...]
 ) -> None:
-    if not evidence or not observations:
+    """Reject status/evidence combinations that cannot be trusted."""
+
+    if not evidence and status == "PASS":
         raise ValueError("PASS reports require observations and evidence")
-    for item in evidence:
-        if item.get("status") != "SAT":
-            raise ValueError("PASS evidence is incomplete or unsupported")
+    statuses = {item["status"] for item in evidence}
+    if status == "PASS" and statuses != {"SAT"}:
+        raise ValueError("PASS evidence is incomplete or unsupported")
+    if status == "FAIL" and "VIOLATED" not in statuses:
+        raise ValueError("FAIL reports require directly violated evidence")
 
 
 __all__ = ["RunRecord", "artifact_path", "list_runs", "load_run"]

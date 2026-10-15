@@ -178,3 +178,52 @@ def test_dashboard_empty_root_is_readable(tmp_path: Path, monkeypatch: pytest.Mo
 
     assert at.exception == []
     assert any("No valid runs found" in item.value for item in at.info)
+
+
+def test_dashboard_hides_page_derived_fields_and_downloads_until_reveal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = tmp_path / "runs"
+    _write_run(runs, "run", status="PASS", reason="sensitive page reason")
+
+    at = _dashboard_app(tmp_path, monkeypatch).run(timeout=20)
+
+    text = "\n".join(
+        [item.value for item in at.markdown]
+        + [item.value for item in at.caption]
+        + [item.value for item in at.warning]
+        + [item.value for item in at.info]
+    )
+    assert "sensitive page reason" not in text
+    assert "project dashboard" not in text
+    assert at.download_button == []
+
+
+def test_events_export_preserves_original_order_and_safe_action_outcomes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = tmp_path / "runs"
+    run = _write_run(runs, "run", status="UNKNOWN", reason="unknown", trace=None)
+    (run / "events.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "action", "action": {"kind": "click", "locator": "#save", "checkpoint_id": "c1"}, "success": False, "steps": 2, "error_class": "TimeoutError"}),
+                json.dumps({"type": "observation", "id": "o1", "url": "https://example.test", "text": "saved", "screenshot": "screenshots/o1.png", "fingerprint": "f"}),
+                json.dumps({"type": "action", "action": {"kind": "fill", "locator": "#password", "value": "secret"}, "success": True, "steps": 3}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    selected = list_runs(runs)[0]
+
+    exported = (_events_export(runs, selected) or b"").decode("utf-8").splitlines()
+    events = [json.loads(line) for line in exported]
+
+    assert [event["type"] for event in events] == ["action", "observation", "action"]
+    assert events[0]["success"] is False
+    assert events[0]["steps"] == 2
+    assert events[0]["error_class"] == "TimeoutError"
+    assert events[2]["success"] is True
+    assert "value" not in events[2]["action"]
+    assert "password" not in exported[2]

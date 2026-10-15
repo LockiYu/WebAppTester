@@ -79,7 +79,7 @@ def test_list_runs_returns_valid_history_newest_first_and_preserves_fields(tmp_p
     assert runs[0].trace == (newer / "trace.zip").resolve()
 
 
-def test_corrupt_and_incomplete_reports_are_omitted(tmp_path: Path) -> None:
+def test_corrupt_and_incomplete_reports_are_unavailable(tmp_path: Path) -> None:
     valid = tmp_path / "valid"
     corrupt = tmp_path / "corrupt"
     incomplete = tmp_path / "incomplete"
@@ -90,7 +90,14 @@ def test_corrupt_and_incomplete_reports_are_omitted(tmp_path: Path) -> None:
 
     runs = list_runs(tmp_path)
 
-    assert [run.directory for run in runs] == [valid.resolve()]
+    assert {run.directory for run in runs} == {
+        valid.resolve(),
+        corrupt.resolve(),
+        incomplete.resolve(),
+    }
+    unavailable = [run for run in runs if run.status == "UNAVAILABLE"]
+    assert {run.directory for run in unavailable} == {corrupt.resolve(), incomplete.resolve()}
+    assert all(run.reason == "report unavailable: corrupt or incomplete" for run in unavailable)
     with pytest.raises(ValueError):
         load_run(tmp_path, corrupt / "report.json")
 
@@ -105,6 +112,27 @@ def test_pass_with_missing_evidence_is_not_loaded_as_pass(tmp_path: Path) -> Non
 def test_malformed_pass_evidence_is_not_loaded_as_pass(tmp_path: Path) -> None:
     report = _report(status="PASS")
     report["verdict"]["evidence"] = [{"observation_id": "o1", "status": "SAT"}]
+    report_path = _write_report(tmp_path / "run", report)
+
+    with pytest.raises(ValueError):
+        load_run(tmp_path, report_path)
+
+
+def test_duplicate_checkpoint_evidence_is_unavailable(tmp_path: Path) -> None:
+    report = _report(status="PASS")
+    report["verdict"]["evidence"] = [
+        report["verdict"]["evidence"][0],
+        {**report["verdict"]["evidence"][0], "observation_id": "o1"},
+    ]
+    report_path = _write_report(tmp_path / "run", report)
+
+    with pytest.raises(ValueError):
+        load_run(tmp_path, report_path)
+
+
+def test_fail_with_only_sat_evidence_is_rejected(tmp_path: Path) -> None:
+    report = _report(status="FAIL")
+    report["verdict"]["evidence"][0]["status"] = "SAT"
     report_path = _write_report(tmp_path / "run", report)
 
     with pytest.raises(ValueError):
