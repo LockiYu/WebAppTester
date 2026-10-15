@@ -148,10 +148,16 @@ class Planner:
             for item in raw_checkpoints:
                 if not isinstance(item, dict):
                     raise TypeError("checkpoint must be an object")
-                if "required" not in item or type(item["required"]) is not bool:
+                if "required" in item and type(item["required"]) is not bool:
                     raise ValueError("checkpoint required must be an explicit boolean")
                 if "scope" in item and not isinstance(item["scope"], str):
                     raise ValueError("checkpoint scope must be a string")
+            required_scopes = location_scope_pair(scenario.text)
+            if required_scopes:
+                return _decompose_location_checkpoints(scenario, raw_checkpoints)
+            for item in raw_checkpoints:
+                if "required" not in item:
+                    raise ValueError("checkpoint required must be an explicit boolean")
             checkpoints = parse_checkpoints(raw_checkpoints)
             for checkpoint in checkpoints:
                 if checkpoint.source not in scenario.text:
@@ -160,7 +166,6 @@ class Planner:
                     )
             # Only standard location pairs are decomposed.  Ordinary prose
             # containing conjunctions remains compatible with page scope.
-            required_scopes = location_scope_pair(scenario.text)
             supplied_scopes = {
                 canonical_scope(checkpoint.scope)
                 for checkpoint in checkpoints
@@ -173,6 +178,73 @@ class Planner:
             return checkpoints
 
         return retry_parse(self.provider, system, user, parse)
+
+
+def _decompose_location_checkpoints(
+    scenario: Scenario, raw_checkpoints: list[object]
+) -> tuple[Checkpoint, ...]:
+    """Build atomic standard-region assertions from an explicit scenario pair.
+
+    The final assertion is deterministic in the scenario text; interim model
+    checkpoints are execution hints and must not be allowed to collapse the
+    final dashboard/sidebar coverage into one claim.
+    """
+
+    source = _location_pair_source(scenario.text)
+    if not source:
+        raise ValueError("multi-location scenario has no exact source span")
+    target = _named_target(scenario.text)
+    fallback_expected = "visible state"
+    for item in raw_checkpoints:
+        if not isinstance(item, dict):
+            continue
+        expected = item.get("expected")
+        if isinstance(expected, str) and expected.strip():
+            fallback_expected = expected.strip()
+            break
+    expected_target = target or fallback_expected
+    return (
+        Checkpoint(
+            "dashboard",
+            source,
+            f"{expected_target} is visible in dashboard",
+            True,
+            "dashboard",
+        ),
+        Checkpoint(
+            "sidebar",
+            source,
+            f"{expected_target} is visible in sidebar",
+            True,
+            "sidebar",
+        ),
+    )
+
+
+def _location_pair_source(text: str) -> str:
+    """Return the smallest exact sentence containing dashboard and sidebar."""
+
+    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+    for sentence in sentences:
+        if "dashboard" in sentence.casefold() and "sidebar" in sentence.casefold():
+            return sentence.strip()
+    if "dashboard" in text.casefold() and "sidebar" in text.casefold():
+        return text.strip()
+    return ""
+
+
+def _named_target(text: str) -> str:
+    """Extract a named project value from common create-and-confirm wording."""
+
+    match = re.search(
+        r"(?:project\s+(?:name|named)|named)\s+(.+?)\s+and\s+(?:confirm|create|save)\b",
+        text,
+        re.IGNORECASE,
+    )
+    if match is None:
+        return ""
+    value = match.group(1).strip(" \t\"'“”‘’")
+    return value.rstrip(" ,.;:!?\"")
 
 
 class Executor:

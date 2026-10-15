@@ -70,7 +70,7 @@ def test_planner_retries_checkpoint_without_explicit_required_boolean() -> None:
     assert len(provider.calls) == 2
 
 
-def test_planner_rejects_combined_scope_for_multi_location_requirement() -> None:
+def test_planner_repairs_combined_scope_for_multi_location_requirement() -> None:
     scenario = Scenario(
         "Verify the project appears in both the dashboard and sidebar",
         "http://localhost",
@@ -93,10 +93,11 @@ def test_planner_rejects_combined_scope_for_multi_location_requirement() -> None
             },
         ]
     }
-    provider = FakeProvider(response, response)
+    provider = FakeProvider(response)
 
-    with pytest.raises(ModelOutputError):
-        Planner(provider).plan(scenario)
+    checkpoints = Planner(provider).plan(scenario)
+
+    assert [checkpoint.scope for checkpoint in checkpoints] == ["dashboard", "sidebar"]
 
 
 def test_planner_keeps_ordinary_both_and_prose_page_scoped() -> None:
@@ -117,6 +118,48 @@ def test_planner_keeps_ordinary_both_and_prose_page_scoped() -> None:
     checkpoints = Planner(provider).plan(scenario)
 
     assert checkpoints[0].scope == "page"
+
+
+def test_planner_decomposes_model_interim_checkpoints_into_exact_location_assertions() -> None:
+    scenario = Scenario(
+        "In the dashboard click Add Project, enter the project name Agent Probe Demo and confirm, then check the new project appears on both dashboard and sidebar.",
+        "http://localhost",
+    )
+    provider = FakeProvider(
+        {
+            "checkpoints": [
+                {
+                    "id": "c1",
+                    "source": "In the dashboard, click Add Project",
+                    "expected": "Add Project is available",
+                    "scope": "input field for project name",
+                },
+                {
+                    "id": "c2",
+                    "source": "enter the project name Agent Probe Demo and confirm",
+                    "expected": "confirmation message",
+                    "scope": "confirmation message",
+                },
+                {
+                    "id": "c4",
+                    "source": "check the new project appears on both dashboard and sidebar",
+                    "expected": "new project appears",
+                    "scope": "sidebar",
+                },
+            ]
+        }
+    )
+
+    checkpoints = Planner(provider).plan(scenario)
+
+    assert [checkpoint.id for checkpoint in checkpoints] == ["dashboard", "sidebar"]
+    assert [checkpoint.scope for checkpoint in checkpoints] == ["dashboard", "sidebar"]
+    assert all(
+        checkpoint.source
+        == "In the dashboard click Add Project, enter the project name Agent Probe Demo and confirm, then check the new project appears on both dashboard and sidebar."
+        for checkpoint in checkpoints
+    )
+    assert all("Agent Probe Demo" in checkpoint.expected for checkpoint in checkpoints)
 
 
 def test_executor_retries_unsupported_action_then_returns_action() -> None:
