@@ -79,7 +79,8 @@ def verdict_from_evidence(
         )
 
     evidence_by_checkpoint: dict[str, list[Evidence]] = {}
-    checkpoint_ids = {checkpoint.id for checkpoint in checkpoint_values}
+    checkpoint_by_id = {checkpoint.id: checkpoint for checkpoint in checkpoint_values}
+    checkpoint_ids = set(checkpoint_by_id)
     for item in evidence_values:
         checkpoint_id = getattr(item, "checkpoint_id", None)
         observation_id = getattr(item, "observation_id", None)
@@ -106,6 +107,23 @@ def verdict_from_evidence(
                 evidence=evidence_values,
                 reason="submitted evidence is unsupported or not grounded in an observation",
             )
+        checkpoint = checkpoint_by_id[checkpoint_id]
+        scope = getattr(checkpoint, "scope", "page")
+        region_id = getattr(item, "region_id", "")
+        if scope != "page":
+            regions = getattr(observation, "regions", ())
+            region = next((candidate for candidate in regions if candidate.id == region_id), None)
+            if (
+                not isinstance(region_id, str)
+                or not region_id.strip()
+                or region is None
+                or quote not in region.text
+            ):
+                return Verdict(
+                    status="UNKNOWN",
+                    evidence=evidence_values,
+                    reason=f"required checkpoint {checkpoint_id} lacks region-grounded evidence",
+                )
         evidence_by_checkpoint.setdefault(checkpoint_id, []).append(item)
 
     supported: dict[str, Evidence] = {}
@@ -136,6 +154,27 @@ def verdict_from_evidence(
                 evidence=evidence_values,
                 reason=f"required checkpoint {checkpoint.id} has unsupported evidence",
             )
+        if getattr(checkpoint, "scope", "page") != "page":
+            region_id = getattr(item, "region_id", "")
+            region = next(
+                (
+                    candidate
+                    for candidate in getattr(observation, "regions", ())
+                    if candidate.id == region_id
+                ),
+                None,
+            )
+            if (
+                not isinstance(region_id, str)
+                or not region_id.strip()
+                or region is None
+                or quote not in region.text
+            ):
+                return Verdict(
+                    status="UNKNOWN",
+                    evidence=evidence_values,
+                    reason=f"required checkpoint {checkpoint.id} lacks region-grounded evidence",
+                )
         supported[checkpoint.id] = item
 
     if any(item.status == "UNKNOWN" for item in supported.values()):
@@ -317,6 +356,7 @@ class Controller:
         started: float,
     ) -> Verdict:
         report = {
+            "checkpoints": [asdict(checkpoint) for checkpoint in checkpoints],
             "steps": self._steps(actions),
             "elapsed_seconds": max(0.0, time.monotonic() - started),
             "token_usage": self._token_usage(),

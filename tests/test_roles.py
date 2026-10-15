@@ -70,6 +70,35 @@ def test_planner_retries_checkpoint_without_explicit_required_boolean() -> None:
     assert len(provider.calls) == 2
 
 
+def test_planner_rejects_combined_scope_for_multi_location_requirement() -> None:
+    scenario = Scenario(
+        "Verify the project appears in both the dashboard and sidebar",
+        "http://localhost",
+    )
+    response = {
+        "checkpoints": [
+            {
+                "id": "dashboard-and-sidebar",
+                "source": "Verify the project appears in both the dashboard and sidebar",
+                "expected": "project is visible",
+                "required": True,
+                "scope": "dashboard and sidebar",
+            },
+            {
+                "id": "dashboard-and-sidebar-2",
+                "source": "Verify the project appears in both the dashboard and sidebar",
+                "expected": "project is visible",
+                "required": True,
+                "scope": "dashboard and sidebar",
+            },
+        ]
+    }
+    provider = FakeProvider(response, response)
+
+    with pytest.raises(ModelOutputError):
+        Planner(provider).plan(scenario)
+
+
 def test_executor_retries_unsupported_action_then_returns_action() -> None:
     provider = FakeProvider(
         {"action": {"kind": "evaluate"}},

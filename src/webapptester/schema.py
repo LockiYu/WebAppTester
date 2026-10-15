@@ -1,6 +1,7 @@
 """Immutable, validated values shared by the web tester roles."""
 
 from dataclasses import dataclass
+import re
 from typing import Final
 
 
@@ -13,6 +14,7 @@ EVIDENCE_STATUSES: Final[frozenset[str]] = frozenset(
 VERDICT_STATUSES: Final[frozenset[str]] = frozenset(
     {"PASS", "FAIL", "UNKNOWN"}
 )
+_COMBINED_SCOPE = re.compile(r"(?:\s+(?:and|or)\s+|[,/&|])", re.IGNORECASE)
 
 
 def _require_text(value: object, field: str, *, nonempty: bool = True) -> str:
@@ -21,6 +23,12 @@ def _require_text(value: object, field: str, *, nonempty: bool = True) -> str:
     if nonempty and not value.strip():
         raise ValueError(f"{field} must be nonempty")
     return value
+
+
+def is_atomic_scope(value: str) -> bool:
+    """Return whether a scope names one observable region."""
+
+    return bool(value.strip()) and _COMBINED_SCOPE.search(value) is None
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +62,8 @@ class Checkpoint:
         if type(self.required) is not bool:
             raise ValueError("checkpoint required must be a boolean")
         _require_text(self.scope, "checkpoint scope")
+        if not is_atomic_scope(self.scope):
+            raise ValueError("checkpoint scope must name one observable region")
 
 
 @dataclass(frozen=True, slots=True)

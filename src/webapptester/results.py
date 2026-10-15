@@ -7,7 +7,7 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
-from .schema import ACTION_KINDS
+from .schema import ACTION_KINDS, is_atomic_scope
 
 _STATUSES = frozenset({"PASS", "FAIL", "UNKNOWN"})
 _EVIDENCE_STATUSES = frozenset({"SAT", "VIOLATED", "UNKNOWN"})
@@ -264,8 +264,8 @@ def _parse_checkpoints(raw: object) -> tuple[dict[str, object], ...]:
         if type(item.get("required", True)) is not bool:
             raise ValueError("checkpoint required must be a boolean")
         scope = item.get("scope", "page")
-        if not isinstance(scope, str) or not scope.strip():
-            raise ValueError("checkpoint scope must be a nonempty string")
+        if not isinstance(scope, str) or not is_atomic_scope(scope):
+            raise ValueError("checkpoint scope must name one observable region")
         checkpoint = {
             "id": item["id"],
             "source": item["source"],
