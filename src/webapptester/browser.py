@@ -24,6 +24,14 @@ class BudgetExhausted(RuntimeError):
     """Raised before a browser call when the per-run action budget is spent."""
 
 
+class AmbiguousLocatorError(RuntimeError):
+    """Raised when a role locator would act on more than one element."""
+
+
+class InvalidRefError(ValueError):
+    """Raised when an action refers to a missing or malformed AI snapshot ref."""
+
+
 @dataclass(frozen=True, slots=True)
 class ActionResult:
     action: Action
@@ -41,6 +49,11 @@ class BrowserGateway:
         self.page = page
         self.max_steps = max_steps
         self.steps = 0
+        # AI snapshot refs are intentionally scoped to the most recent
+        # observation.  Keep only the sanitized snapshot and its ref names;
+        # the raw Playwright response is never retained.
+        self.latest_snapshot = ""
+        self._latest_refs: frozenset[str] = frozenset()
         # A page-wide default keeps observation and all supported actions within
         # the same five-second Playwright timeout. Test doubles may omit it.
         set_default_timeout = getattr(page, "set_default_timeout", None)
@@ -65,7 +78,13 @@ class BrowserGateway:
         self.steps += 1
         try:
             self._dispatch(action)
-        except (PlaywrightError, PlaywrightTimeoutError, TimeoutError) as error:
+        except (
+            PlaywrightError,
+            PlaywrightTimeoutError,
+            TimeoutError,
+            AmbiguousLocatorError,
+            InvalidRefError,
+        ) as error:
             # Playwright errors (including errors from test doubles) are
             # represented as an unsuccessful action result. They are not a
             # product verdict and must not escape as a test FAIL.
@@ -83,6 +102,7 @@ class BrowserGateway:
         url = self.page.url
         text = self.page.locator("body").inner_text()[:20_000]
         screenshot = self.page.screenshot(full_page=True)
+        self._capture_snapshot()
         return store.save_observation(url=url, text=text, screenshot=screenshot)
 
     def _dispatch(self, action: Action) -> None:
@@ -112,13 +132,64 @@ class BrowserGateway:
         raise ValueError(f"unsupported action kind: {action.kind!r}")
 
     def _locator(self, locator: str) -> Any:
+        if locator.startswith("ref="):
+            return self._ref_locator(locator)
         if locator.startswith("role="):
             role, name = _role_locator(locator)
-            return self.page.get_by_role(role, name=name)
+            result = self.page.get_by_role(role, name=name)
+            # Test doubles may expose only get_by_role; real Playwright
+            # locators support count(), which lets us classify duplicate role
+            # matches before click/fill strictness raises a generic error.
+            count = getattr(result, "count", None)
+            if callable(count) and count() > 1:
+                raise AmbiguousLocatorError("role locator matched multiple elements")
+            return result
         return self.page.locator(locator)
+
+    def _ref_locator(self, locator: str) -> Any:
+        match = _REF_LOCATOR.fullmatch(locator)
+        if match is None:
+            raise InvalidRefError("ref locator must use ref=eN")
+        ref = match.group(1)
+        if ref not in self._latest_refs:
+            raise InvalidRefError("ref is not present in the latest observation")
+        get_by_ref = getattr(self.page, "get_by_ref", None)
+        if not callable(get_by_ref):
+            raise InvalidRefError("page does not support AI snapshot refs")
+        return get_by_ref(ref)
+
+    def _capture_snapshot(self) -> None:
+        """Capture a redacted AI snapshot and replace the current ref set."""
+
+        self.latest_snapshot = ""
+        self._latest_refs = frozenset()
+        aria_snapshot = getattr(self.page, "aria_snapshot", None)
+        if not callable(aria_snapshot):
+            return
+        try:
+            raw_snapshot = aria_snapshot(mode="ai")
+        except (PlaywrightError, PlaywrightTimeoutError, TimeoutError):
+            # The snapshot is auxiliary model context. A snapshot failure must
+            # not change the existing visible observation/evidence contract.
+            return
+        if not isinstance(raw_snapshot, str):
+            return
+        self.latest_snapshot = _sanitize_snapshot(raw_snapshot)
+        self._latest_refs = frozenset(_REF.findall(raw_snapshot))
 
 
 _ROLE_LOCATOR = re.compile(r"^role=([^;\s]+);name=(.+)$")
+_REF_LOCATOR = re.compile(r"^ref=(e\d+)$")
+_REF = re.compile(r"\[ref=(e\d+)\]")
+_SNAPSHOT_VALUE = re.compile(r"^(?P<prefix>\s*-\s*/value:\s*).*$", re.IGNORECASE)
+_TEXTBOX_VALUE_AFTER_REF = re.compile(
+    r"^(?P<prefix>\s*-\s*textbox\b.*?\[ref=e\d+\])\s*:\s*.*$",
+    re.IGNORECASE,
+)
+_TEXTBOX_VALUE_BEFORE_REF = re.compile(
+    r"^(?P<prefix>\s*-\s*textbox\b.*?):\s*.*?(?P<ref>\s+\[ref=e\d+\])\s*$",
+    re.IGNORECASE,
+)
 _NUMBER = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)"
 _SCROLL_PAIR = re.compile(rf"^\s*({_NUMBER})\s*(?:,|\s+)\s*({_NUMBER})\s*$")
 _SCROLL_SINGLE = re.compile(rf"^\s*({_NUMBER})\s*$")
@@ -129,6 +200,29 @@ def _role_locator(locator: str) -> tuple[str, str]:
     if match is None:
         raise ValueError("role locator must use role=<role>;name=<name>")
     return match.group(1), match.group(2)
+
+
+def _sanitize_snapshot(snapshot: str) -> str:
+    """Redact textbox values while retaining labels, refs, and structure."""
+
+    sanitized: list[str] = []
+    for line in snapshot.splitlines():
+        value_line = _SNAPSHOT_VALUE.match(line)
+        if value_line is not None:
+            sanitized.append(f"{value_line.group('prefix')}<redacted>")
+            continue
+        inline_value = _TEXTBOX_VALUE_AFTER_REF.match(line)
+        if inline_value is not None:
+            sanitized.append(f"{inline_value.group('prefix')}: <redacted>")
+            continue
+        inline_value = _TEXTBOX_VALUE_BEFORE_REF.match(line)
+        if inline_value is not None:
+            sanitized.append(
+                f"{inline_value.group('prefix')}: <redacted>{inline_value.group('ref')}"
+            )
+            continue
+        sanitized.append(line)
+    return "\n".join(sanitized)
 
 
 def _number(value: str) -> int | float:
@@ -146,4 +240,10 @@ def _scroll_delta(spec: str) -> tuple[int | float, int | float]:
     raise ValueError("scroll value must be a y amount or an x,y pair")
 
 
-__all__ = ["ActionResult", "BrowserGateway", "BudgetExhausted"]
+__all__ = [
+    "ActionResult",
+    "AmbiguousLocatorError",
+    "BrowserGateway",
+    "BudgetExhausted",
+    "InvalidRefError",
+]
