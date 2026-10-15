@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 
-DEEPSEEK_MAX_TOKENS = 1024
+DEEPSEEK_MAX_TOKENS = 4096
 
 
 class ModelOutputError(RuntimeError):
@@ -198,6 +198,7 @@ class DeepSeekProvider(_HTTPJSONProvider):
             ],
             "stream": False,
             "response_format": {"type": "json_object"},
+            "thinking": {"type": "disabled"},
             "max_tokens": DEEPSEEK_MAX_TOKENS,
         }
         return self._complete(
