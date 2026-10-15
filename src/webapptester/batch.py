@@ -10,6 +10,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 from . import cli
 from .browser import MAX_STEPS
@@ -27,6 +28,57 @@ _SUMMARY_FIELDS = (
     "steps",
     "reason",
 )
+_SENSITIVE_QUERY_TERMS = frozenset(
+    {
+        "accesskey",
+        "auth",
+        "authorization",
+        "credential",
+        "credentials",
+        "jwt",
+        "key",
+        "password",
+        "passwd",
+        "privatekey",
+        "pwd",
+        "refresh_token",
+        "secret",
+        "session",
+        "sessionid",
+        "sig",
+        "signature",
+        "token",
+    }
+)
+
+
+def _is_sensitive_query_key(key: str) -> bool:
+    normalized = "".join(character for character in key.lower() if character.isalnum())
+    if normalized in _SENSITIVE_QUERY_TERMS:
+        return True
+    return any(term in normalized for term in ("password", "passwd", "token", "secret", "apikey", "credential"))
+
+
+def _redact_url(url: str) -> str:
+    """Remove URL userinfo and common credential query values for exports."""
+
+    if not isinstance(url, str):
+        return ""
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return url
+
+    netloc = parsed.netloc.rsplit("@", 1)[-1]
+    query_parts: list[str] = []
+    for component in parsed.query.split("&") if parsed.query else []:
+        key, _separator, _ = component.partition("=")
+        if _is_sensitive_query_key(unquote_plus(key)):
+            query_parts.append(f"{key}=REDACTED")
+        else:
+            query_parts.append(component)
+    query = "&".join(query_parts)
+    return urlunsplit((parsed.scheme, netloc, parsed.path, query, parsed.fragment))
 
 
 def load_batch(path: Path) -> tuple[dict[str, object], ...]:
@@ -173,7 +225,7 @@ def run_batch(items: Iterable[dict[str, object]], output_root: Path) -> Path:
         summary_items.append(
             {
                 "scenario": item.get("scenario", ""),
-                "url": item.get("url", ""),
+                "url": _redact_url(item.get("url", "")),
                 "provider": provider,
                 "model": model,
                 "status": status,

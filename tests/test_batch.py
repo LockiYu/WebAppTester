@@ -87,11 +87,52 @@ def test_run_batch_is_sequential_and_exports_summary(tmp_path: Path, monkeypatch
     assert [item["steps"] for item in summary["items"]] == [1, 2, 3]
     assert [item["reason"] for item in summary["items"]] == ["reason 1", "reason 2", "reason 3"]
     assert "value" not in (batch_dir / "batch-summary.json").read_text(encoding="utf-8")
+    json_report_paths = [item["report_path"] for item in summary["items"]]
+    assert all(json_report_paths)
 
     with (batch_dir / "batch-summary.csv").open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     assert rows[0]["scenario"] == "first, scenario"
     assert rows[0]["status"] == "PASS"
+    assert [row["report_path"] for row in rows] == json_report_paths
+
+
+def test_summary_redacts_url_credentials_but_runner_receives_original(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_url = (
+        "https://alice:password@example.test/projects?keep=ok&token=secret"
+        "&API_KEY=abc&x-api-token=def&flag#section"
+    )
+    seen_urls: list[str] = []
+
+    def fake_run(args: argparse.Namespace) -> tuple[int, Path]:
+        seen_urls.append(args.url)
+        report = tmp_path / "report.json"
+        report.write_text(
+            json.dumps({"steps": 1, "verdict": {"status": "PASS", "reason": "ok"}}),
+            encoding="utf-8",
+        )
+        return 0, report
+
+    monkeypatch.setattr(batch.cli, "run", fake_run)
+    root = batch.run_batch(
+        ({"scenario": "safe URL export", "url": original_url},),
+        tmp_path / "runs",
+    )
+    summary_text = (root / "batch-summary.json").read_text(encoding="utf-8")
+    summary = json.loads(summary_text)
+
+    assert seen_urls == [original_url]
+    assert summary["items"][0]["url"] == (
+        "https://example.test/projects?keep=ok&token=REDACTED&API_KEY=REDACTED"
+        "&x-api-token=REDACTED&flag#section"
+    )
+    assert "password" not in summary_text
+    assert "secret" not in summary_text
+    with (root / "batch-summary.csv").open(newline="", encoding="utf-8") as handle:
+        row = next(csv.DictReader(handle))
+    assert row["url"] == summary["items"][0]["url"]
 
 
 def test_main_exit_status_precedence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
