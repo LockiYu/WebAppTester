@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -17,6 +18,11 @@ if TYPE_CHECKING:
 
 
 DEFAULT_ACTION_TIMEOUT_MS = 5_000
+# SPA hydration can leave both the visible body and the accessibility tree
+# empty for a short interval after navigation. Keep this wait independent from
+# the action budget and shorter than the page-wide Playwright timeout.
+OBSERVATION_READY_TIMEOUT_MS = 750
+OBSERVATION_POLL_INTERVAL_MS = 50
 MAX_STEPS = 35
 
 
@@ -100,9 +106,11 @@ class BrowserGateway:
         """Capture visible page state and persist it as append-only evidence."""
 
         url = self.page.url
-        text = self.page.locator("body").inner_text()[:20_000]
-        screenshot = self.page.screenshot(full_page=True)
+        text = self._body_text()
         self._capture_snapshot()
+        if not self._observation_is_meaningful(text):
+            text = self._wait_for_observation_ready(text)
+        screenshot = self.page.screenshot(full_page=True)
         regions = self._capture_regions()
         if regions:
             return store.save_observation(
@@ -111,6 +119,40 @@ class BrowserGateway:
         # Keep lightweight gateways and legacy stores source-compatible when a
         # page exposes no capturable semantic regions.
         return store.save_observation(url=url, text=text, screenshot=screenshot)
+
+    def _body_text(self) -> str:
+        return self.page.locator("body").inner_text()[:20_000]
+
+    def _observation_is_meaningful(self, text: str) -> bool:
+        return bool(text.strip() or self.latest_snapshot.strip())
+
+    def _wait_for_observation_ready(self, text: str) -> str:
+        """Give a hydrating SPA a short chance to expose visible state.
+
+        ``wait_for_timeout`` yields to the browser event loop, allowing React
+        and similar runtimes to finish committing their first visible tree.
+        Lightweight test doubles may not provide it, in which case the
+        original single-pass observation behavior is preserved.
+        """
+
+        wait_for_timeout = getattr(self.page, "wait_for_timeout", None)
+        if not callable(wait_for_timeout):
+            return text
+
+        deadline = time.monotonic() + OBSERVATION_READY_TIMEOUT_MS / 1_000
+        while not self._observation_is_meaningful(text):
+            remaining_ms = int(max(0, (deadline - time.monotonic()) * 1_000))
+            if remaining_ms <= 0:
+                break
+            try:
+                wait_for_timeout(min(OBSERVATION_POLL_INTERVAL_MS, remaining_ms))
+                text = self._body_text()
+                self._capture_snapshot()
+            except (PlaywrightError, PlaywrightTimeoutError, TimeoutError):
+                # Readiness is auxiliary context. Preserve the current
+                # observation contract if a page closes during the short wait.
+                break
+        return text
 
     def _capture_regions(self) -> tuple[ObservationRegion, ...]:
         """Capture standard semantic DOM regions without target-specific selectors.

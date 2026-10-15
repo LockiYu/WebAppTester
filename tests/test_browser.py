@@ -71,6 +71,42 @@ class _BodyLocator:
         return "Visible page text"
 
 
+class _HydratingBodyLocator:
+    def __init__(self, page):
+        self.page = page
+
+    def inner_text(self):
+        return "Hydrated page text" if self.page.ticks >= 2 else ""
+
+
+class _HydratingPage:
+    url = "https://example.test"
+
+    def __init__(self):
+        self.ticks = 0
+        self.calls = []
+
+    def locator(self, selector):
+        self.calls.append(("locator", selector))
+        if selector == "body":
+            return _HydratingBodyLocator(self)
+        return _WorkingLocator(self)
+
+    def screenshot(self, *, full_page):
+        self.calls.append(("screenshot", full_page))
+        return b"screenshot"
+
+    def wait_for_timeout(self, timeout):
+        self.calls.append(("wait_for_timeout", timeout))
+        self.ticks += 1
+
+    def aria_snapshot(self, *, mode):
+        self.calls.append(("aria_snapshot", mode))
+        if self.ticks < 2:
+            return ""
+        return '- button "Ready" [ref=e9]'
+
+
 class _Store:
     def save_observation(self, *, url, text, screenshot):
         return Observation(
@@ -153,6 +189,18 @@ def test_observation_keeps_sanitized_snapshot_and_dispatches_latest_ref():
     assert stale.success is False
     assert stale.error.startswith("InvalidRefError:")
     assert current.success is True
+
+
+def test_observation_waits_for_hydrated_body_and_snapshot_without_spending_steps():
+    page = _HydratingPage()
+    gateway = BrowserGateway(page, max_steps=2)
+
+    observation = gateway.observe(_Store())
+
+    assert observation.text == "Hydrated page text"
+    assert gateway.latest_snapshot == '- button "Ready" [ref=e9]'
+    assert gateway.steps == 0
+    assert ("wait_for_timeout", 50) in page.calls
 
 
 def test_snapshot_redacts_inline_values_for_all_input_roles():
