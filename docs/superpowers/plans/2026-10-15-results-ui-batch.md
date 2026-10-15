@@ -14,7 +14,7 @@
 - The dashboard reads only files under the configured local `runs/` root. Never accept a browser-supplied arbitrary path for a screenshot or Trace.
 - Run artifacts are read-only in the dashboard. A corrupt or incomplete run is shown as unavailable, not silently treated as PASS.
 - Batch execution is sequential. A failed item does not prevent later items from running; its status remains FAIL or UNKNOWN according to its own report.
-- Never include action input values, local credentials, or environment secrets in structured UI fields, JSON/JSONL exports, or batch summaries. Raw screenshots and Playwright Trace are page evidence and may themselves contain sensitive page content; expose them only in the loopback-bound local dashboard after an explicit user reveal with a clear warning. Do not claim raw evidence has been redacted.
+- Never include action input values, local credentials from environment, or environment secrets in reports, action logs or batch summaries. URLs, page text, evidence quotes, action locators, screenshots, JSON/JSONL audit downloads and Playwright Trace may contain sensitive page content; show or download them only in the loopback-bound local dashboard after one explicit user reveal with a clear warning. Do not claim page-derived evidence has been redacted. High-level history may show only status, counts and timing before reveal.
 - Keep the existing course PPT and markdown files untracked and unstaged.
 
 ---
