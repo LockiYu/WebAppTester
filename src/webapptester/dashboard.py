@@ -156,16 +156,6 @@ def _safe_event(raw: object) -> dict[str, Any] | None:
     return None
 
 
-def _trace_data(root: Path, run: RunRecord) -> bytes | None:
-    trace = _trace_artifact(root, run)
-    if trace is None:
-        return None
-    try:
-        return trace.read_bytes()
-    except OSError:
-        return None
-
-
 def _artifact_warning(label: str) -> None:
     st.warning(f"{label} unavailable for this run.")
 
@@ -174,7 +164,7 @@ def _render_downloads(root: Path, run: RunRecord, *, reveal_raw: bool) -> None:
     if not reveal_raw:
         return
     st.subheader("Downloads")
-    columns = st.columns(3)
+    columns = st.columns(2)
     download_specs = (
         ("report.json", "application/json", _report_export),
         ("events.jsonl", "application/x-ndjson", _events_export),
@@ -193,18 +183,15 @@ def _render_downloads(root: Path, run: RunRecord, *, reveal_raw: bool) -> None:
                     key=f"download-{run.directory}-{name}",
                 )
 
-    with columns[2]:
-        trace_data = _trace_data(root, run)
-        if trace_data is None:
-            _artifact_warning("trace.zip")
-        else:
-            st.download_button(
-                "Download trace.zip",
-                data=trace_data,
-                file_name="trace.zip",
-                mime="application/zip",
-                key=f"download-{run.directory}-trace.zip",
-            )
+    trace = _trace_artifact(root, run)
+    if trace is None:
+        _artifact_warning("trace.zip")
+    else:
+        st.info(
+            "The local Playwright trace may contain session secrets, including "
+            "cookies. It is never available as a dashboard download; inspect "
+            f"the local file manually at `{trace}`."
+        )
 
 
 def _render_evidence(run: RunRecord) -> None:

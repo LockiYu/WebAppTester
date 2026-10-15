@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from streamlit.testing.v1 import AppTest
-from webapptester.dashboard import _events_export, _report_export, _trace_data
+from webapptester.dashboard import _events_export, _report_export
 from webapptester.results import list_runs
 
 
@@ -156,11 +156,11 @@ def test_dashboard_history_and_selected_run_show_evidence_and_artifacts(
     for secret in (b"secret", b"password", b"api_key", b"discard this", b"another secret"):
         assert secret not in report_export
         assert secret not in events_export
-    assert not any(button.label == "Download trace.zip" for button in at.download_button)
 
     at.selectbox[0].set_value(0).run()
     at.checkbox[0].set_value(True).run()
-    assert any(button.label == "Download trace.zip" for button in at.download_button)
+    assert not any(button.label == "Download trace.zip" for button in at.download_button)
+    assert any("session secrets" in item.value for item in at.info)
 
     trace_run = next(run for run in list_runs(runs) if run.status == "FAIL")
     outside_trace = tmp_path / "outside.trace.zip"
@@ -168,7 +168,9 @@ def test_dashboard_history_and_selected_run_show_evidence_and_artifacts(
     assert trace_run.trace is not None
     trace_run.trace.unlink()
     trace_run.trace.symlink_to(outside_trace)
-    assert _trace_data(runs, trace_run) is None
+    at.selectbox[0].set_value(1).run()
+    at.checkbox[0].set_value(True).run()
+    assert any("trace.zip unavailable" in item.value for item in at.warning)
 
 
 def test_dashboard_empty_root_is_readable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -244,3 +246,36 @@ def test_events_export_preserves_original_order_and_safe_action_outcomes(
     assert events[2]["success"] is True
     assert "value" not in events[2]["action"]
     assert "password" not in exported[2]
+
+
+def test_dashboard_exports_drop_cookie_fields_and_never_offer_trace_download(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = tmp_path / "runs"
+    run = _write_run(runs, "cookie-run", status="PASS", reason="ok")
+    report_path = run / "report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["cookie"] = {"name": "accessToken", "value": "cookie-secret"}
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    events_path = run / "events.jsonl"
+    events_path.write_text(
+        json.dumps(
+            {
+                "type": "observation",
+                "id": "o1",
+                "url": "https://example.test",
+                "text": "dashboard",
+                "cookie": {"name": "accessToken", "value": "cookie-secret"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    selected = list_runs(runs)[0]
+    assert b"cookie-secret" not in (_report_export(runs, selected) or b"")
+    assert b"cookie-secret" not in (_events_export(runs, selected) or b"")
+
+    at = _dashboard_app(tmp_path, monkeypatch).run(timeout=20)
+    at.checkbox[0].set_value(True).run()
+    assert not any(button.label == "Download trace.zip" for button in at.download_button)

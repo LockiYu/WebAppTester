@@ -30,6 +30,38 @@ class BootstrapError(RuntimeError):
     """Raised when the local authentication fixture cannot be bootstrapped."""
 
 
+def _validate_login_url(login_url: str) -> str:
+    """Accept only the exact local fixture login endpoint.
+
+    The URL is validated before reading the env file or starting Playwright so
+    a caller cannot redirect the credential submission to another origin.
+    A trailing slash is accepted because browsers may canonicalize it.
+    """
+
+    if login_url == DEFAULT_LOGIN_URL or login_url == f"{DEFAULT_LOGIN_URL}/":
+        return DEFAULT_LOGIN_URL
+    raise BootstrapError("login URL must be the local 4gaBoards login endpoint")
+
+
+def _assert_login_url(page: Any) -> None:
+    """Fail closed unless the page is still on the exact local login URL."""
+
+    current_url = getattr(page, "url", None)
+    if current_url not in {DEFAULT_LOGIN_URL, f"{DEFAULT_LOGIN_URL}/"}:
+        raise BootstrapError("login page navigated away from the local login endpoint")
+
+
+def _assert_dashboard_url(page: Any) -> None:
+    """Require a local post-login page whose path is no longer /login."""
+
+    current_url = getattr(page, "url", None)
+    if not isinstance(current_url, str) or not current_url.startswith("http://127.0.0.1:3001/"):
+        raise BootstrapError("authenticated dashboard was not confirmed")
+    path = current_url.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+    if path == "http://127.0.0.1:3001/login":
+        raise BootstrapError("authenticated dashboard was not confirmed")
+
+
 def read_local_env(path: Path | str) -> dict[str, str]:
     """Read the local fixture env file without logging any values."""
 
@@ -94,28 +126,17 @@ def _submit_login(page: Any) -> None:
 
 
 def _wait_for_dashboard(page: Any) -> None:
-    """Wait for a visible dashboard marker after login."""
-
-    try:
-        page.wait_for_function(
-            "() => document.body && document.body.innerText.toLowerCase().includes('dashboard')",
-            timeout=15_000,
-        )
-        if "dashboard" in page.locator("body").inner_text().lower():
-            return
-    except (PlaywrightError, PlaywrightTimeoutError):
-        pass
+    """Wait for a local, non-login page with a visible Add Project control."""
 
     markers = (
         page.get_by_role("button", name=re.compile(r"add\s+project", re.I)),
         page.get_by_role("link", name=re.compile(r"add\s+project", re.I)),
-        page.get_by_text(re.compile("dashboard", re.I)),
     )
     for marker in markers:
         try:
-            if marker.count() > 0:
-                marker.first.wait_for(state="visible", timeout=15_000)
-                return
+            marker.first.wait_for(state="visible", timeout=15_000)
+            _assert_dashboard_url(page)
+            return
         except (PlaywrightError, PlaywrightTimeoutError):
             continue
     raise BootstrapError("authenticated dashboard was not confirmed")
@@ -157,6 +178,7 @@ def bootstrap_auth(
 ) -> Path:
     """Log in in a private context and save its authenticated storage state."""
 
+    canonical_login_url = _validate_login_url(login_url)
     values = read_local_env(env_path)
     destination = Path(storage_path)
     try:
@@ -165,7 +187,8 @@ def bootstrap_auth(
             context = browser.new_context()
             try:
                 page = context.new_page()
-                page.goto(login_url)
+                page.goto(canonical_login_url)
+                _assert_login_url(page)
                 username = _first_login_field(
                     page,
                     (
@@ -188,7 +211,9 @@ def bootstrap_auth(
                 # The login field accepts email or username.  The generated
                 # email is the stable identifier accepted by every fixture
                 # locale; keep the username as a selector fallback only.
+                _assert_login_url(page)
                 username.fill(values["DEFAULT_ADMIN_EMAIL"])
+                _assert_login_url(page)
                 password.fill(values["DEFAULT_ADMIN_PASSWORD"])
                 _submit_login(page)
                 _wait_for_dashboard(page)

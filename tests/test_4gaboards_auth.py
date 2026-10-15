@@ -180,6 +180,144 @@ def test_bootstrap_env_parser_rejects_missing_credentials(tmp_path: Path, conten
         bootstrap.read_local_env(env_path)
 
 
+@pytest.mark.parametrize(
+    "login_url",
+    [
+        "http://localhost:3001/login",
+        "http://127.0.0.1:3002/login",
+        "https://127.0.0.1:3001/login",
+        "http://127.0.0.1:3001/login?next=https://attacker.invalid",
+        "http://admin:password@127.0.0.1:3001/login",
+    ],
+)
+def test_bootstrap_rejects_noncanonical_login_url_before_reading_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, login_url: str
+) -> None:
+    env_read = False
+    browser_started = False
+
+    def fail_read(_path: Path) -> dict[str, str]:
+        nonlocal env_read
+        env_read = True
+        raise AssertionError("credentials must not be read")
+
+    def fail_playwright() -> object:
+        nonlocal browser_started
+        browser_started = True
+        raise AssertionError("browser must not start")
+
+    monkeypatch.setattr(bootstrap, "read_local_env", fail_read)
+    monkeypatch.setattr(bootstrap, "sync_playwright", fail_playwright)
+    with pytest.raises(bootstrap.BootstrapError, match="login URL"):
+        bootstrap.bootstrap_auth(
+            env_path=tmp_path / "instance.env",
+            login_url=login_url,
+            storage_path=tmp_path / "auth.json",
+        )
+
+    assert not env_read
+    assert not browser_started
+
+
+def test_bootstrap_rejects_redirect_before_filling_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env_path = tmp_path / "instance.env"
+    env_path.write_text(
+        "DEFAULT_ADMIN_EMAIL=admin@example.invalid\nDEFAULT_ADMIN_PASSWORD=fixture-password\n",
+        encoding="utf-8",
+    )
+
+    class RedirectPage:
+        url = "http://127.0.0.1:3001/login"
+        fill_calls = 0
+
+        def goto(self, _url: str) -> None:
+            self.url = "https://attacker.invalid/login"
+
+    page = RedirectPage()
+
+    class Context:
+        def new_page(self) -> RedirectPage:
+            return page
+
+        def close(self) -> None:
+            pass
+
+    class Browser:
+        def new_context(self) -> Context:
+            return Context()
+
+        def close(self) -> None:
+            pass
+
+    browser = Browser()
+    monkeypatch.setattr(bootstrap, "_launch_chromium", lambda _chromium: browser)
+    monkeypatch.setattr(bootstrap, "sync_playwright", lambda: _PlaywrightContextManager(_Playwright()))
+
+    with pytest.raises(bootstrap.BootstrapError, match="navigated away"):
+        bootstrap.bootstrap_auth(env_path=env_path, storage_path=tmp_path / "auth.json")
+
+    assert page.fill_calls == 0
+
+
+def test_bootstrap_rechecks_login_url_immediately_before_fill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env_path = tmp_path / "instance.env"
+    env_path.write_text(
+        "DEFAULT_ADMIN_EMAIL=admin@example.invalid\nDEFAULT_ADMIN_PASSWORD=fixture-password\n",
+        encoding="utf-8",
+    )
+
+    class Field:
+        def __init__(self, page: object) -> None:
+            self.first = self
+            self.page = page
+
+        def count(self) -> int:
+            return 1
+
+        def fill(self, _value: str) -> None:
+            self.page.fill_calls += 1
+
+    class ChangedPage:
+        url = "http://127.0.0.1:3001/login"
+        fill_calls = 0
+
+        def goto(self, _url: str) -> None:
+            pass
+
+        def locator(self, selector: str) -> Field:
+            if selector == 'input[name="username"]':
+                self.url = "https://attacker.invalid/login"
+            return Field(self)
+
+    page = ChangedPage()
+
+    class Context:
+        def new_page(self) -> ChangedPage:
+            return page
+
+        def close(self) -> None:
+            pass
+
+    class Browser:
+        def new_context(self) -> Context:
+            return Context()
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(bootstrap, "_launch_chromium", lambda _chromium: Browser())
+    monkeypatch.setattr(bootstrap, "sync_playwright", lambda: _PlaywrightContextManager(_Playwright()))
+
+    with pytest.raises(bootstrap.BootstrapError, match="navigated away"):
+        bootstrap.bootstrap_auth(env_path=env_path, storage_path=tmp_path / "auth.json")
+
+    assert page.fill_calls == 0
+
+
 def test_bootstrap_storage_state_is_written_mode_0600(tmp_path: Path) -> None:
     destination = tmp_path / "auth.json"
 

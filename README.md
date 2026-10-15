@@ -46,11 +46,15 @@ DeepSeek is selectable with `--provider deepseek`; it uses
 `deepseek-v4.1-flash` by default and requires `DEEPSEEK_API_KEY` in the
 environment. No DeepSeek request is made without that key.
 
-To inspect the newest trace:
+To inspect the newest trace locally during development:
 
 ```sh
 .venv/bin/playwright show-trace "$(ls -td runs/demo/*/trace.zip | head -1)"
 ```
+
+Playwright traces are local developer artifacts and may contain session secrets,
+including cookies. The dashboard never offers a trace download; use the local
+path from the selected run's report when manual inspection is necessary.
 
 ## Isolated 4gaBoards fixture
 
@@ -167,6 +171,9 @@ Install the optional Streamlit UI and start the read-only dashboard with:
 Open [http://127.0.0.1:8501](http://127.0.0.1:8501) to inspect the run history,
 checkpoint evidence, actions, screenshots, and available report artifacts. The
 `runs/` directory is local demo output and is ignored by Git; configure another
-local root with `--runs-root` when needed. Screenshots and Playwright Trace are
-raw page evidence and may contain sensitive page content; the dashboard keeps
-them hidden until you explicitly select the raw-evidence reveal control.
+local root with `--runs-root` when needed. Page-derived evidence and the report
+and events downloads remain hidden until you explicitly select the raw-evidence
+reveal control. Screenshots and Playwright Trace are raw page evidence and may
+contain sensitive page content. In particular, a trace may contain session
+cookies, so it stays on disk for local inspection and is never a dashboard
+download.
