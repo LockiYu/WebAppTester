@@ -20,6 +20,7 @@ from .schema import Action, Checkpoint, Evidence, Observation, Scenario, Verdict
 
 MAX_STEPS = 35
 REPEAT_LIMIT = 3
+AMBIGUOUS_LOCATOR_RETRY_LIMIT = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,6 +178,8 @@ class Controller:
         current_verdict = Verdict("UNKNOWN", (), "run has not produced evidence")
         repeat_counts: dict[tuple[str, tuple[object, ...]], int] = {}
         action_failure = False
+        ambiguous_locator_retries = 0
+        failure_hint = ""
         stop_reason: str | None = None
 
         try:
@@ -196,6 +199,7 @@ class Controller:
                     initial,
                     tuple(history),
                     gap_request,
+                    failure_hint=failure_hint,
                 )
                 if not isinstance(action, Action):
                     raise ValueError("executor returned an invalid action")
@@ -219,11 +223,21 @@ class Controller:
                     stop_reason = "browser action budget exhausted"
                     break
                 except Exception as error:
+                    error_class = self._error_class(error)
                     self._append_action_event(
                         action,
                         success=False,
-                        error_class=type(error).__name__,
+                        error_class=error_class,
                     )
+                    if error_class == "AmbiguousLocatorError":
+                        ambiguous_locator_retries += 1
+                        initial = self.browser.observe(self.store)
+                        observations.append(initial)
+                        if ambiguous_locator_retries <= AMBIGUOUS_LOCATOR_RETRY_LIMIT:
+                            failure_hint = "ambiguous_locator"
+                            continue
+                        stop_reason = "ambiguous locator retries exhausted"
+                        break
                     stop_reason = "browser action failed"
                     break
 
@@ -235,8 +249,19 @@ class Controller:
                     steps=getattr(result, "steps", None),
                 )
                 if not success:
+                    error_class = self._error_class(getattr(result, "error", ""))
+                    if error_class == "AmbiguousLocatorError":
+                        ambiguous_locator_retries += 1
+                        initial = self.browser.observe(self.store)
+                        observations.append(initial)
+                        if ambiguous_locator_retries <= AMBIGUOUS_LOCATOR_RETRY_LIMIT:
+                            failure_hint = "ambiguous_locator"
+                            continue
+                        stop_reason = "ambiguous locator retries exhausted"
+                        break
                     action_failure = True
 
+                failure_hint = ""
                 initial = self.browser.observe(self.store)
                 observations.append(initial)
                 new_evidence, gap_request = self._verify(checkpoints, tuple(observations))
@@ -348,17 +373,52 @@ class Controller:
         observation: Observation,
         history: tuple[Action, ...],
         gap_request: GapRequest | None,
+        *,
+        failure_hint: str = "",
     ) -> Action:
         method = self.executor.next_action
         try:
             parameters = inspect.signature(method).parameters
         except (TypeError, ValueError):
             parameters = {}
-        if "gap_request" in parameters:
-            return method(scenario, checkpoints, observation, history, gap_request=gap_request)
-        if "gap" in parameters:
-            return method(scenario, checkpoints, observation, history, gap=gap_request)
-        return method(scenario, checkpoints, observation, history)
+        accepts_var_kwargs = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+
+        def accepts_keyword(name: str) -> bool:
+            parameter = parameters.get(name)
+            if parameter is None:
+                return accepts_var_kwargs
+            return parameter.kind in {
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            }
+
+        optional: dict[str, object] = {}
+        if accepts_keyword("gap_request"):
+            optional["gap_request"] = gap_request
+        elif accepts_keyword("gap"):
+            optional["gap"] = gap_request
+
+        snapshot = self._latest_snapshot()
+        if accepts_keyword("accessibility_snapshot"):
+            optional["accessibility_snapshot"] = snapshot
+        elif accepts_keyword("latest_snapshot"):
+            optional["latest_snapshot"] = snapshot
+        elif accepts_var_kwargs:
+            optional["accessibility_snapshot"] = snapshot
+
+        if accepts_keyword("failure_hint"):
+            optional["failure_hint"] = failure_hint
+        elif accepts_var_kwargs:
+            optional["failure_hint"] = failure_hint
+
+        return method(scenario, checkpoints, observation, history, **optional)
+
+    def _latest_snapshot(self) -> str:
+        value = getattr(self.browser, "latest_snapshot", "")
+        return value if isinstance(value, str) else ""
 
     def _append_action_event(
         self,

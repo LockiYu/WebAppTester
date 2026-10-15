@@ -121,6 +121,54 @@ class _FakeBrowser:
         )
 
 
+class _RecoveryBrowser(_FakeBrowser):
+    def __init__(self, results):
+        super().__init__()
+        self.latest_snapshot = ""
+        self.results = list(results)
+
+    def observe(self, store):
+        self.observations += 1
+        self.latest_snapshot = f"snapshot-{self.observations}"
+        text = "completed" if self.observations >= 3 else "not completed"
+        return _observation(f"o{self.observations}", text=text, fingerprint=f"state-{self.observations}")
+
+    def act(self, action):
+        self.steps += 1
+        result = self.results.pop(0)
+        return SimpleNamespace(action=action, steps=self.steps, **result)
+
+
+class _SnapshotExecutor:
+    def __init__(self, actions):
+        self.actions = list(actions)
+        self.calls = []
+
+    def next_action(
+        self,
+        scenario,
+        checkpoints,
+        observation,
+        history,
+        accessibility_snapshot="",
+        failure_hint="",
+    ):
+        self.calls.append((accessibility_snapshot, failure_hint))
+        return self.actions.pop(0)
+
+
+class _GroundedVerifier:
+    def __init__(self):
+        self.calls = 0
+
+    def verify(self, checkpoints, observations):
+        self.calls += 1
+        current = observations[-1]
+        if current.text == "completed":
+            return (_evidence(observation_id=current.id, quote="completed"),)
+        return ()
+
+
 class _RaisingBrowser(_FakeBrowser):
     def act(self, action):
         self.steps += 1
@@ -181,6 +229,71 @@ def test_browser_exception_after_reserving_step_is_appended_without_secret() -> 
     event_text = json.dumps(store.events)
     assert "secret-value" not in event_text
     assert "must not be persisted" not in event_text
+
+
+def test_ambiguous_locator_recovers_with_fresh_snapshot_and_grounded_pass() -> None:
+    store = _FakeStore()
+    executor = _SnapshotExecutor(
+        [
+            Action("click", "role=button;name=Add Project", value="secret-value"),
+            Action("click", "ref=e2"),
+        ]
+    )
+    verifier = _GroundedVerifier()
+    browser = _RecoveryBrowser(
+        [
+            {"success": False, "error": "AmbiguousLocatorError: duplicate button"},
+            {"success": True, "error": ""},
+        ]
+    )
+
+    verdict = Controller(
+        _FakePlanner((_checkpoint(),)),
+        executor,
+        verifier,
+        browser,
+        store,
+    ).run(_scenario())
+
+    assert verdict.status == "PASS"
+    assert verifier.calls == 1
+    assert executor.calls == [("snapshot-1", ""), ("snapshot-2", "ambiguous_locator")]
+    assert [event["steps"] for event in store.events] == [1, 2]
+    assert store.events[0]["success"] is False
+    assert store.events[0]["error_class"] == "AmbiguousLocatorError"
+    assert store.events[1]["success"] is True
+    report_text = json.dumps(store.report)
+    assert "secret-value" not in report_text
+
+
+def test_repeated_ambiguous_locator_stops_after_two_retries_without_verification() -> None:
+    store = _FakeStore()
+    executor = _SnapshotExecutor(
+        [Action("click", f"ref=e{index}") for index in range(1, 4)]
+    )
+    verifier = _GroundedVerifier()
+    browser = _RecoveryBrowser(
+        [
+            {"success": False, "error": "AmbiguousLocatorError: duplicate button"},
+            {"success": False, "error": "AmbiguousLocatorError: duplicate button"},
+            {"success": False, "error": "AmbiguousLocatorError: duplicate button"},
+        ]
+    )
+
+    verdict = Controller(
+        _FakePlanner((_checkpoint(),)),
+        executor,
+        verifier,
+        browser,
+        store,
+    ).run(_scenario(max_steps=10))
+
+    assert verdict.status == "UNKNOWN"
+    assert verifier.calls == 0
+    assert browser.steps == 3
+    assert len(store.events) == 3
+    assert all(event["success"] is False for event in store.events)
+    assert store.report["steps"] == 3
 
 
 def test_budget_exhaustion_terminates_at_exactly_35_steps() -> None:
