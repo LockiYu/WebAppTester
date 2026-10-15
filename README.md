@@ -52,6 +52,30 @@ To inspect the newest trace:
 .venv/bin/playwright show-trace "$(ls -td runs/demo/*/trace.zip | head -1)"
 ```
 
+## Isolated 4gaBoards fixture
+
+The integration fixture runs 4gaBoards 3.2.16 and PostgreSQL on
+`127.0.0.1:3001`. It uses a separate Compose project and named volumes, so the
+existing instance on port 3000 and its data are left unchanged.
+
+Create the private first-run credentials once:
+
+```sh
+.venv/bin/python scripts/setup_4gaboards_local.py
+```
+
+The command creates `runs/4gaboards-local/instance.env` with mode `0600` and
+prints the next Docker command without printing any credential values. Start
+the fixture with the printed command, or run:
+
+```sh
+docker compose --env-file runs/4gaboards-local/instance.env \
+  -p webapptester-4ga -f examples/4gaboards/compose.yaml up -d
+```
+
+The generated env file and Docker volumes are local-only. Keep the env file
+private and do not commit it.
+
 Run the tests with:
 
 ```sh

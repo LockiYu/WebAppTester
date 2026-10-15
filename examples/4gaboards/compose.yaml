@@ -1,0 +1,52 @@
+services:
+  db:
+    image: public.ecr.aws/docker/library/postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: 4gaBoards
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run scripts/setup_4gaboards_local.py first}
+    volumes:
+      - webapptester_4ga_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d 4gaBoards"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    image: ghcr.io/rargames/4gaboards:3.2.16
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      BASE_URL: http://127.0.0.1:3001
+      SECRET_KEY: ${SECRET_KEY:?Run scripts/setup_4gaboards_local.py first}
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?Run scripts/setup_4gaboards_local.py first}@db:5432/4gaBoards
+      NODE_ENV: production
+      DEFAULT_ADMIN_USERNAME: ${DEFAULT_ADMIN_USERNAME:?Run scripts/setup_4gaboards_local.py first}
+      DEFAULT_ADMIN_EMAIL: ${DEFAULT_ADMIN_EMAIL:?Run scripts/setup_4gaboards_local.py first}
+      DEFAULT_ADMIN_NAME: ${DEFAULT_ADMIN_NAME:?Run scripts/setup_4gaboards_local.py first}
+      DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:?Run scripts/setup_4gaboards_local.py first}
+    ports:
+      - "127.0.0.1:3001:1337"
+    volumes:
+      - webapptester_4ga_user_avatars:/app/public/user-avatars
+      - webapptester_4ga_project_background_images:/app/public/project-background-images
+      - webapptester_4ga_attachments:/app/private/attachments
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          node -e "fetch('http://127.0.0.1:1337/login').then((response) =>
+          process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+
+volumes:
+  webapptester_4ga_postgres_data:
+  webapptester_4ga_user_avatars:
+  webapptester_4ga_project_background_images:
+  webapptester_4ga_attachments:
