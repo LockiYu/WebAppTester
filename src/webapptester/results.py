@@ -324,8 +324,11 @@ def _validate_evidence(
             duplicate_ids.add(observation_id)
         observation_by_id[observation_id] = observation
     checkpoint_ids: set[str] = set()
+    declared_checkpoint_ids = {str(item["id"]) for item in checkpoints}
     for item in evidence:
         checkpoint_id = item["checkpoint_id"]
+        if checkpoints and checkpoint_id not in declared_checkpoint_ids:
+            raise ValueError("evidence references an undeclared checkpoint")
         if checkpoint_id in checkpoint_ids:
             raise ValueError("evidence contains duplicate checkpoint IDs")
         checkpoint_ids.add(checkpoint_id)
