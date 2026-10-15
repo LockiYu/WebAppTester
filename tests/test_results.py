@@ -102,6 +102,22 @@ def test_pass_with_missing_evidence_is_not_loaded_as_pass(tmp_path: Path) -> Non
         load_run(tmp_path, report_path)
 
 
+def test_malformed_pass_evidence_is_not_loaded_as_pass(tmp_path: Path) -> None:
+    report = _report(status="PASS")
+    report["verdict"]["evidence"] = [{"observation_id": "o1", "status": "SAT"}]
+    report_path = _write_report(tmp_path / "run", report)
+
+    with pytest.raises(ValueError):
+        load_run(tmp_path, report_path)
+
+
+def test_steps_above_budget_are_rejected(tmp_path: Path) -> None:
+    report_path = _write_report(tmp_path / "run", _report(steps=36))
+
+    with pytest.raises(ValueError):
+        load_run(tmp_path, report_path)
+
+
 def test_artifact_path_rejects_escape_paths_and_accepts_files_inside_run(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     (run_dir / "screenshots").mkdir(parents=True)
@@ -160,4 +176,3 @@ def test_load_run_rejects_report_outside_root(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError):
         load_run(root, report_path)
-

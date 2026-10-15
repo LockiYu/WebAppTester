@@ -9,6 +9,8 @@ from pathlib import Path
 
 
 _STATUSES = frozenset({"PASS", "FAIL", "UNKNOWN"})
+_EVIDENCE_STATUSES = frozenset({"SAT", "VIOLATED", "UNKNOWN"})
+_EVIDENCE_FIELDS = frozenset({"checkpoint_id", "observation_id", "quote", "status"})
 _REQUIRED_FIELDS = frozenset(
     {"steps", "elapsed_seconds", "token_usage", "actions", "observations", "verdict"}
 )
@@ -101,6 +103,7 @@ def load_run(root: Path, report_path: Path) -> RunRecord:
     actions = _parse_actions(raw["actions"])
     observations = _parse_observations(raw["observations"])
     status, reason, evidence = _parse_verdict(raw["verdict"])
+    _validate_evidence(evidence, observations)
     if status == "PASS":
         _validate_pass_evidence(evidence, observations)
 
@@ -209,10 +212,43 @@ def _parse_verdict(raw: object) -> tuple[str, str, tuple[dict[str, str], ...]]:
         raise ValueError("evidence must be a list of dictionaries")
     parsed: list[dict[str, str]] = []
     for item in evidence:
+        if set(item) != _EVIDENCE_FIELDS:
+            raise ValueError("evidence has missing or unsupported fields")
         if any(not isinstance(key, str) or not isinstance(value, str) for key, value in item.items()):
             raise ValueError("evidence fields must be strings")
+        if any(not item[key].strip() for key in _EVIDENCE_FIELDS):
+            raise ValueError("evidence fields must be nonempty")
+        if item["status"] not in _EVIDENCE_STATUSES:
+            raise ValueError("evidence status is invalid")
         parsed.append(dict(item))
     return status, reason, tuple(parsed)
+
+
+def _validate_evidence(
+    evidence: tuple[dict[str, str], ...], observations: tuple[dict[str, object], ...]
+) -> None:
+    """Require every stored evidence claim to retain its observation provenance."""
+
+    observation_by_id: dict[str, dict[str, object]] = {}
+    duplicate_ids: set[str] = set()
+    for observation in observations:
+        observation_id = observation.get("id")
+        if not isinstance(observation_id, str) or not observation_id.strip():
+            continue
+        if observation_id in observation_by_id:
+            duplicate_ids.add(observation_id)
+        observation_by_id[observation_id] = observation
+    for item in evidence:
+        observation_id = item["observation_id"]
+        observation = observation_by_id.get(observation_id)
+        text = observation.get("text") if observation is not None else None
+        if (
+            observation is None
+            or observation_id in duplicate_ids
+            or not isinstance(text, str)
+            or item["quote"] not in text
+        ):
+            raise ValueError("evidence is not grounded in an observation")
 
 
 def _validate_pass_evidence(
@@ -220,11 +256,8 @@ def _validate_pass_evidence(
 ) -> None:
     if not evidence or not observations:
         raise ValueError("PASS reports require observations and evidence")
-    observation_ids = {
-        item.get("id") for item in observations if isinstance(item.get("id"), str)
-    }
     for item in evidence:
-        if item.get("status") != "SAT" or item.get("observation_id") not in observation_ids:
+        if item.get("status") != "SAT":
             raise ValueError("PASS evidence is incomplete or unsupported")
 
 
