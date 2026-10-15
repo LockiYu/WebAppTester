@@ -1,0 +1,183 @@
+from __future__ import annotations
+
+import json
+from types import SimpleNamespace
+
+from webapptester.controller import Controller, verdict_from_evidence
+from webapptester.schema import Action, Checkpoint, Evidence, Observation, Scenario
+
+
+def _checkpoint(identifier: str = "c1", required: bool = True) -> Checkpoint:
+    return Checkpoint(identifier, "verify this", "visible state", required)
+
+
+def _observation(identifier: str = "o1", text: str = "visible state", fingerprint: str = "same") -> Observation:
+    return Observation(identifier, "https://example.test", text, "shot.png", fingerprint)
+
+
+def _evidence(checkpoint_id: str = "c1", observation_id: str = "o1", status: str = "SAT", quote: str = "visible state") -> Evidence:
+    return Evidence(checkpoint_id, observation_id, quote, status)
+
+
+def test_all_required_sat_evidence_from_observations_passes() -> None:
+    checkpoints = (_checkpoint("c1"), _checkpoint("c2"))
+    observations = (_observation("o1"), _observation("o2", "sidebar visible"))
+    evidence = (_evidence("c1", "o1"), _evidence("c2", "o2", quote="sidebar visible"))
+
+    verdict = verdict_from_evidence(checkpoints, evidence, observations)
+
+    assert verdict.status == "PASS"
+    assert len(verdict.evidence) == 2
+
+
+def test_unknown_required_evidence_cannot_pass() -> None:
+    verdict = verdict_from_evidence(
+        (_checkpoint("c1"), _checkpoint("c2")),
+        (_evidence("c1"), _evidence("c2", status="UNKNOWN")),
+        (_observation("o1"),),
+    )
+
+    assert verdict.status == "UNKNOWN"
+
+
+def test_unreferenced_sat_quote_is_unknown() -> None:
+    verdict = verdict_from_evidence(
+        (_checkpoint(),),
+        (_evidence("other"),),
+        (_observation(),),
+    )
+
+    assert verdict.status == "UNKNOWN"
+
+
+def test_direct_violated_quote_is_fail() -> None:
+    verdict = verdict_from_evidence(
+        (_checkpoint(),),
+        (_evidence(status="VIOLATED"),),
+        (_observation(),),
+    )
+
+    assert verdict.status == "FAIL"
+
+
+class _FakePlanner:
+    def __init__(self, checkpoints: tuple[Checkpoint, ...]) -> None:
+        self.checkpoints = checkpoints
+
+    def plan(self, scenario: Scenario) -> tuple[Checkpoint, ...]:
+        return self.checkpoints
+
+
+class _FakeExecutor:
+    def __init__(self, actions: list[Action]) -> None:
+        self.actions = actions
+        self.calls = 0
+
+    def next_action(self, scenario, checkpoints, observation, history):
+        self.calls += 1
+        if len(self.actions) == 1:
+            return self.actions[0]
+        return self.actions.pop(0)
+
+
+class _FakeVerifier:
+    def __init__(self, evidence_factory=None) -> None:
+        self.evidence_factory = evidence_factory
+
+    def verify(self, checkpoints, observations):
+        if self.evidence_factory is None:
+            return ()
+        return tuple(self.evidence_factory(observations))
+
+
+class _FakeBrowser:
+    def __init__(self, *, success: bool = True, max_steps: int = 35) -> None:
+        self.success = success
+        self.max_steps = max_steps
+        self.steps = 0
+        self.observations = 0
+
+    def observe(self, store):
+        self.observations += 1
+        return _observation(f"o{self.observations}")
+
+    def act(self, action):
+        self.steps += 1
+        return SimpleNamespace(
+            action=action,
+            success=self.success,
+            error="TimeoutError: secret input value" if not self.success else "",
+            steps=self.steps,
+        )
+
+
+class _FakeStore:
+    def __init__(self) -> None:
+        self.events = []
+        self.report = None
+
+    def append_event(self, event):
+        self.events.append(event)
+
+    def write_report(self, report):
+        self.report = report
+
+
+def _scenario(max_steps: int = 35) -> Scenario:
+    return Scenario("verify this", "https://example.test", max_steps=max_steps)
+
+
+def test_action_timeout_alone_is_unknown_and_redacts_action_value() -> None:
+    store = _FakeStore()
+    browser = _FakeBrowser(success=False)
+    controller = Controller(
+        _FakePlanner((_checkpoint(),)),
+        _FakeExecutor([Action("fill", "#password", "secret-value")]),
+        _FakeVerifier(),
+        browser,
+        store,
+    )
+
+    verdict = controller.run(_scenario())
+
+    assert verdict.status == "UNKNOWN"
+    report_text = json.dumps(store.report)
+    assert "secret-value" not in report_text
+    assert "secret-value" not in json.dumps(store.events)
+
+
+def test_budget_exhaustion_terminates_at_exactly_35_steps() -> None:
+    store = _FakeStore()
+    browser = _FakeBrowser()
+    actions = [Action("click", f"#button-{index}") for index in range(35)]
+    controller = Controller(
+        _FakePlanner((_checkpoint(),)),
+        _FakeExecutor(actions),
+        _FakeVerifier(),
+        browser,
+        store,
+    )
+
+    verdict = controller.run(_scenario())
+
+    assert verdict.status == "UNKNOWN"
+    assert browser.steps == 35
+    assert store.report["steps"] == 35
+
+
+def test_repeated_state_and_action_stops_unknown_before_unbounded_loop() -> None:
+    store = _FakeStore()
+    browser = _FakeBrowser()
+    controller = Controller(
+        _FakePlanner((_checkpoint(),)),
+        _FakeExecutor([Action("click", "#same")]),
+        _FakeVerifier(),
+        browser,
+        store,
+    )
+
+    verdict = controller.run(_scenario())
+
+    assert verdict.status == "UNKNOWN"
+    assert browser.steps == 2
+    assert "loop limit" in verdict.reason
