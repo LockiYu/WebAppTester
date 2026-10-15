@@ -63,8 +63,12 @@ def _safe_evidence(item: dict[str, str]) -> dict[str, str]:
 
 
 def _safe_checkpoint(item: dict[str, object]) -> dict[str, object]:
-    fields = ("id", "source", "expected", "required", "scope")
-    return {key: item[key] for key in fields if key in item}
+    fields = ("id", "source", "expected", "required", "scope", "target")
+    return {
+        key: item[key]
+        for key in fields
+        if key in item and (key != "target" or item[key])
+    }
 
 
 def _trace_artifact(root: Path, run: RunRecord) -> Path | None:

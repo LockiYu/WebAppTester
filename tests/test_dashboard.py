@@ -293,6 +293,7 @@ def test_report_export_preserves_scoped_contract_metadata(tmp_path: Path) -> Non
             "expected": "Course Test",
             "required": True,
             "scope": "dashboard",
+            "target": "Course Test",
         }
     ]
     report["observations"][0]["regions"] = [
@@ -314,5 +315,6 @@ def test_report_export_preserves_scoped_contract_metadata(tmp_path: Path) -> Non
     exported = json.loads((_report_export(runs, selected) or b"{}").decode("utf-8"))
 
     assert exported["checkpoints"][0]["scope"] == "dashboard"
+    assert exported["checkpoints"][0]["target"] == "Course Test"
     assert exported["observations"][0]["regions"][0]["id"] == "dashboard"
     assert exported["verdict"]["evidence"][0]["region_id"] == "dashboard"

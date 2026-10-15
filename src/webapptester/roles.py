@@ -22,7 +22,7 @@ from .schema import (
     Observation,
     Scenario,
     canonical_scope,
-    expected_targets_supported,
+    checkpoint_target_supported,
     location_scope_pair,
     parse_action,
     parse_checkpoints,
@@ -86,13 +86,15 @@ def _json(value: object) -> str:
 
 PLANNER_SYSTEM = """You are the Planner role in an evidence-gated Playwright tester.
 Return one JSON object with exactly this shape:
-{"checkpoints":[{"id":"c1","source":"exact quote from the scenario","expected":"visible state","required":true,"scope":"main"}]}
+{"checkpoints":[{"id":"c1","source":"exact quote from the scenario","expected":"visible state","required":true,"scope":"main","target":"optional named item"}]}
 Every source must be copied exactly from the scenario text. IDs must be distinct.
 The expected field describes visible page state. Required must be a JSON boolean.
 Scope identifies one independently observable page region. Use "page" only for a
 whole-page assertion. Split requirements that mention multiple locations into one
 checkpoint per location, each with its own non-page scope. Never use one checkpoint
 or one body-text quote to cover multiple locations.
+When an assertion names a concrete item (such as a project name), copy that item
+into target; target must be observable text and is checked against the evidence quote.
 Do not return prose, actions, locators, code, or unsupported fields."""
 
 
@@ -210,6 +212,7 @@ def _decompose_location_checkpoints(
             f"{expected_target} is visible in dashboard",
             True,
             "dashboard",
+            target,
         ),
         Checkpoint(
             "sidebar",
@@ -217,6 +220,7 @@ def _decompose_location_checkpoints(
             f"{expected_target} is visible in sidebar",
             True,
             "sidebar",
+            target,
         ),
     )
 
@@ -236,15 +240,19 @@ def _location_pair_source(text: str) -> str:
 def _named_target(text: str) -> str:
     """Extract a named project value from common create-and-confirm wording."""
 
-    match = re.search(
-        r"(?:project\s+(?:name|named)|named)\s+(.+?)\s+and\s+(?:confirm|create|save)\b",
-        text,
-        re.IGNORECASE,
+    patterns = (
+        r"(?:project\s+(?:name|named)|named)\s+(.+?)(?:\s+and\b|,\s*|\s+then\b)",
+        r"\bcreate\s+(?:a\s+)?project\s+(.+?)(?:\s+and\b|,\s*|\s+then\b)",
     )
-    if match is None:
-        return ""
-    value = match.group(1).strip(" \t\"'“”‘’")
-    return value.rstrip(" ,.;:!?\"")
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match is None:
+            continue
+        value = match.group(1).strip(" \t\"'“”‘’")
+        value = value.rstrip(" ,.;:!?\"")
+        if value:
+            return value
+    return ""
 
 
 class Executor:
@@ -278,6 +286,7 @@ class Executor:
                     "expected": checkpoint.expected,
                     "required": checkpoint.required,
                     "scope": checkpoint.scope,
+                    "target": checkpoint.target,
                 }
                 for checkpoint in checkpoints
             ],
@@ -339,6 +348,7 @@ class Verifier:
                         "expected": checkpoint.expected,
                         "required": checkpoint.required,
                         "scope": checkpoint.scope,
+                        "target": checkpoint.target,
                     }
                     for checkpoint in checkpoints
                 ],
@@ -405,8 +415,8 @@ class Verifier:
                         raise ValueError(
                             f"evidence quote is not grounded in region {item.region_id}"
                         )
-                if item.status == "SAT" and not expected_targets_supported(
-                    checkpoint.expected, item.quote
+                if item.status == "SAT" and not checkpoint_target_supported(
+                    checkpoint.target, checkpoint.expected, item.quote
                 ):
                     raise ValueError(
                         f"SAT evidence misses the expected target for {checkpoint.id}"

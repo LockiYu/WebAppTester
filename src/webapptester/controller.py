@@ -22,7 +22,7 @@ from .schema import (
     Observation,
     Scenario,
     Verdict,
-    expected_targets_supported,
+    checkpoint_target_supported,
     scope_matches_region,
 )
 
@@ -127,7 +127,9 @@ def verdict_from_evidence(
                     evidence=evidence_values,
                     reason=f"required checkpoint {checkpoint_id} lacks region-grounded evidence",
                 )
-        if status == "SAT" and not expected_targets_supported(checkpoint.expected, quote):
+        if status == "SAT" and not checkpoint_target_supported(
+            checkpoint.target, checkpoint.expected, quote
+        ):
             return Verdict(
                 status="UNKNOWN",
                 evidence=evidence_values,
@@ -172,7 +174,9 @@ def verdict_from_evidence(
                     evidence=evidence_values,
                     reason=f"required checkpoint {checkpoint.id} lacks region-grounded evidence",
                 )
-        if status == "SAT" and not expected_targets_supported(checkpoint.expected, quote):
+        if status == "SAT" and not checkpoint_target_supported(
+            checkpoint.target, checkpoint.expected, quote
+        ):
             return Verdict(
                 status="UNKNOWN",
                 evidence=evidence_values,
@@ -388,8 +392,16 @@ class Controller:
         observations: list[Observation],
         started: float,
     ) -> Verdict:
+        checkpoint_report = []
+        for checkpoint in checkpoints:
+            serialized = asdict(checkpoint)
+            # Keep legacy reports byte-compatible when no explicit target was
+            # declared; derived targets are retained for later validation.
+            if not serialized["target"]:
+                serialized.pop("target")
+            checkpoint_report.append(serialized)
         report = {
-            "checkpoints": [asdict(checkpoint) for checkpoint in checkpoints],
+            "checkpoints": checkpoint_report,
             "steps": self._steps(actions),
             "elapsed_seconds": max(0.0, time.monotonic() - started),
             "token_usage": self._token_usage(),

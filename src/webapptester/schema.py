@@ -15,8 +15,33 @@ VERDICT_STATUSES: Final[frozenset[str]] = frozenset(
     {"PASS", "FAIL", "UNKNOWN"}
 )
 _COMBINED_SCOPE = re.compile(r"(?:\s+(?:and|or)\s+|[,/&|])", re.IGNORECASE)
-_SCOPE_ALIASES: Final[dict[str, str]] = {"dashboard": "main", "sidebar": "aside"}
+_SCOPE_ALIASES: Final[dict[str, str]] = {
+    "dashboard": "main",
+    "sidebar": "aside",
+    "role-main": "main",
+    "role-complementary": "aside",
+    '[role="main"]': "main",
+    '[role="complementary"]': "aside",
+}
 _TARGET_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
+_GENERIC_TARGET_WORDS: Final[frozenset[str]] = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "project",
+        "new",
+        "item",
+        "visible",
+        "appears",
+        "is",
+        "are",
+        "shown",
+        "displayed",
+        "exists",
+        "state",
+    }
+)
 
 
 def _require_text(value: object, field: str, *, nonempty: bool = True) -> str:
@@ -49,13 +74,35 @@ def expected_targets_supported(expected: str, quote: str) -> bool:
     extra lexical constraint and remain governed by quote provenance.
     """
 
+    raw_tokens = tuple(_TARGET_TOKEN.findall(expected))
     targets = tuple(
         token.casefold()
-        for token in _TARGET_TOKEN.findall(expected)
-        if token[0].isupper() or any(character.isdigit() for character in token)
+        for token in raw_tokens
+        if (
+            (token[0].isupper() or any(character.isdigit() for character in token))
+            and token.casefold() not in _GENERIC_TARGET_WORDS
+        )
     )
     lowered_quote = quote.casefold()
-    return all(target in lowered_quote for target in targets)
+    if targets:
+        return all(target in lowered_quote for target in targets)
+    # Legacy checkpoints without an explicit target retain their provider
+    # semantics.  New planner output supplies ``target`` whenever a concrete
+    # item must be proven, so arbitrary body text cannot satisfy that contract.
+    return True
+
+
+def checkpoint_target_supported(target: str, expected: str, quote: str) -> bool:
+    """Check the explicit checkpoint target, falling back to legacy expectations.
+
+    Planner-derived targets are authoritative and are matched case-insensitively
+    as an exact substring of the captured quote.  Older checkpoints do not have
+    a target field, so they retain the conservative title-case token check.
+    """
+
+    if target.strip():
+        return target.casefold() in quote.casefold()
+    return expected_targets_supported(expected, quote)
 
 
 def location_scope_pair(text: str) -> frozenset[str]:
@@ -99,6 +146,7 @@ class Checkpoint:
     # scopes (for example ``main`` or ``aside``) require region-grounded
     # evidence before they can contribute to a PASS verdict.
     scope: str = "page"
+    target: str = ""
 
     def __post_init__(self) -> None:
         _require_text(self.id, "checkpoint id")
@@ -109,6 +157,7 @@ class Checkpoint:
         _require_text(self.scope, "checkpoint scope")
         if not is_atomic_scope(self.scope):
             raise ValueError("checkpoint scope must name one observable region")
+        _require_text(self.target, "checkpoint target", nonempty=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,7 +264,7 @@ def parse_scenario(raw: dict[str, object]) -> Scenario:
 
 
 def parse_checkpoint(raw: dict[str, object]) -> Checkpoint:
-    values = _mapping(raw, {"id", "source", "expected", "required", "scope"})
+    values = _mapping(raw, {"id", "source", "expected", "required", "scope", "target"})
     for key in ("id", "source", "expected"):
         if key not in values:
             raise ValueError(f"checkpoint requires {key}")
@@ -224,6 +273,8 @@ def parse_checkpoint(raw: dict[str, object]) -> Checkpoint:
         raise ValueError("checkpoint required must be a boolean")
     if "scope" in values and not isinstance(values["scope"], str):
         raise ValueError("checkpoint scope must be a string")
+    if "target" in values and not isinstance(values["target"], str):
+        raise ValueError("checkpoint target must be a string")
     return Checkpoint(**values)
 
 

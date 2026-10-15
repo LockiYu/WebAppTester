@@ -188,6 +188,22 @@ def test_sat_quote_must_contain_expected_target() -> None:
     assert verdict_from_evidence((checkpoint,), (evidence,), (observation,)).status == "UNKNOWN"
 
 
+def test_explicit_checkpoint_target_rejects_unrelated_sat_quote():
+    checkpoint = Checkpoint("project", "project appears", "the item is visible", True, target="Course Test")
+    observation = _observation(text="Other")
+    evidence = Evidence("project", observation.id, "Other", "SAT")
+
+    assert verdict_from_evidence((checkpoint,), (evidence,), (observation,)).status == "UNKNOWN"
+
+
+def test_explicit_checkpoint_target_accepts_case_insensitive_sat_quote():
+    checkpoint = Checkpoint("project", "project appears", "the item is visible", True, target="Course Test")
+    observation = _observation(text="course test")
+    evidence = Evidence("project", observation.id, "course test", "SAT")
+
+    assert verdict_from_evidence((checkpoint,), (evidence,), (observation,)).status == "PASS"
+
+
 class _FakePlanner:
     def __init__(self, checkpoints: tuple[Checkpoint, ...]) -> None:
         self.checkpoints = checkpoints

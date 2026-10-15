@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .schema import (
     ACTION_KINDS,
-    expected_targets_supported,
+    checkpoint_target_supported,
     is_atomic_scope,
     scope_matches_region,
 )
@@ -130,7 +130,7 @@ def load_run(root: Path, report_path: Path) -> RunRecord:
     checkpoints = _parse_checkpoints(raw.get("checkpoints", []))
     status, reason, evidence = _parse_verdict(raw["verdict"])
     _validate_evidence(evidence, observations, checkpoints)
-    _validate_verdict_consistency(status, evidence)
+    _validate_verdict_consistency(status, evidence, checkpoints)
 
     directory = resolved_report.parent
     trace_text = raw.get("trace_path")
@@ -261,13 +261,15 @@ def _parse_checkpoints(raw: object) -> tuple[dict[str, object], ...]:
     checkpoints: list[dict[str, object]] = []
     ids: set[str] = set()
     for item in raw:
-        allowed = {"id", "source", "expected", "required", "scope"}
+        allowed = {"id", "source", "expected", "required", "scope", "target"}
         if set(item) - allowed or not {"id", "source", "expected"}.issubset(item):
             raise ValueError("checkpoint has missing or unsupported fields")
         if any(not isinstance(item[key], str) for key in ("id", "source", "expected")):
             raise ValueError("checkpoint text fields must be strings")
         if type(item.get("required", True)) is not bool:
             raise ValueError("checkpoint required must be a boolean")
+        if not isinstance(item.get("target", ""), str):
+            raise ValueError("checkpoint target must be a string")
         scope = item.get("scope", "page")
         if not isinstance(scope, str) or not is_atomic_scope(scope):
             raise ValueError("checkpoint scope must name one observable region")
@@ -277,6 +279,7 @@ def _parse_checkpoints(raw: object) -> tuple[dict[str, object], ...]:
             "expected": item["expected"],
             "required": item.get("required", True),
             "scope": scope,
+            "target": item.get("target", ""),
         }
         if not checkpoint["id"] or not checkpoint["source"] or not checkpoint["expected"]:
             raise ValueError("checkpoint fields must be nonempty")
@@ -374,7 +377,11 @@ def _validate_evidence(
         if (
             checkpoint is not None
             and item["status"] == "SAT"
-            and not expected_targets_supported(str(checkpoint["expected"]), item["quote"])
+            and not checkpoint_target_supported(
+                str(checkpoint.get("target", "")),
+                str(checkpoint["expected"]),
+                item["quote"],
+            )
         ):
             raise ValueError("SAT evidence misses the expected target")
 
@@ -399,12 +406,30 @@ def _validate_evidence(
 
 
 def _validate_verdict_consistency(
-    status: str, evidence: tuple[dict[str, str], ...]
+    status: str,
+    evidence: tuple[dict[str, str], ...],
+    checkpoints: tuple[dict[str, object], ...] = (),
 ) -> None:
     """Reject status/evidence combinations that cannot be trusted."""
 
     if not evidence and status == "PASS":
         raise ValueError("PASS reports require observations and evidence")
+    if checkpoints:
+        required_ids = {
+            str(item["id"])
+            for item in checkpoints
+            if item.get("required", True) is True
+        }
+        required_statuses = {
+            item["status"]
+            for item in evidence
+            if item["checkpoint_id"] in required_ids
+        }
+        if status == "PASS" and required_statuses != {"SAT"}:
+            raise ValueError("PASS evidence is incomplete or unsupported")
+        if status == "FAIL" and "VIOLATED" not in required_statuses:
+            raise ValueError("FAIL reports require directly violated evidence")
+        return
     statuses = {item["status"] for item in evidence}
     if status == "PASS" and statuses != {"SAT"}:
         raise ValueError("PASS evidence is incomplete or unsupported")

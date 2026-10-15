@@ -111,6 +111,43 @@ def test_scoped_checkpoint_and_region_metadata_are_loaded(tmp_path: Path) -> Non
     assert run.observations[0]["regions"][0]["id"] == "dashboard"
 
 
+def test_pass_allows_optional_unknown_checkpoint(tmp_path: Path) -> None:
+    report = _report(status="PASS")
+    report["checkpoints"] = [
+        {
+            "id": "required",
+            "source": "visible page",
+            "expected": "visible page",
+            "required": True,
+        },
+        {
+            "id": "optional",
+            "source": "optional state",
+            "expected": "optional state",
+            "required": False,
+        },
+    ]
+    report["verdict"]["evidence"] = [
+        {
+            "checkpoint_id": "required",
+            "observation_id": "o1",
+            "quote": "visible page",
+            "status": "SAT",
+        },
+        {
+            "checkpoint_id": "optional",
+            "observation_id": "o1",
+            "quote": "visible page",
+            "status": "UNKNOWN",
+        },
+    ]
+
+    run = load_run(tmp_path, _write_report(tmp_path / "run", report))
+
+    assert run.status == "PASS"
+    assert {item["status"] for item in run.evidence} == {"SAT", "UNKNOWN"}
+
+
 def test_persisted_scoped_evidence_must_match_region_scope(tmp_path: Path) -> None:
     report = _report(status="PASS")
     report["checkpoints"] = [

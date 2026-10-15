@@ -120,6 +120,30 @@ def test_planner_keeps_ordinary_both_and_prose_page_scoped() -> None:
     assert checkpoints[0].scope == "page"
 
 
+def test_planner_derives_explicit_project_target_from_create_wording() -> None:
+    scenario = Scenario(
+        "Create project Alpha and verify it appears on dashboard and sidebar",
+        "http://localhost",
+    )
+    provider = FakeProvider(
+        {
+            "checkpoints": [
+                {
+                    "id": "combined",
+                    "source": scenario.text,
+                    "expected": "the project is visible",
+                    "required": True,
+                    "scope": "dashboard and sidebar",
+                }
+            ]
+        }
+    )
+
+    checkpoints = Planner(provider).plan(scenario)
+
+    assert [checkpoint.target for checkpoint in checkpoints] == ["Alpha", "Alpha"]
+
+
 def test_planner_decomposes_model_interim_checkpoints_into_exact_location_assertions() -> None:
     scenario = Scenario(
         "In the dashboard click Add Project, enter the project name Agent Probe Demo and confirm, then check the new project appears on both dashboard and sidebar.",
@@ -160,6 +184,10 @@ def test_planner_decomposes_model_interim_checkpoints_into_exact_location_assert
         for checkpoint in checkpoints
     )
     assert all("Agent Probe Demo" in checkpoint.expected for checkpoint in checkpoints)
+    assert [checkpoint.target for checkpoint in checkpoints] == [
+        "Agent Probe Demo",
+        "Agent Probe Demo",
+    ]
 
 
 def test_executor_retries_unsupported_action_then_returns_action() -> None:
