@@ -178,6 +178,31 @@ def test_persisted_scoped_evidence_must_match_region_scope(tmp_path: Path) -> No
         load_run(tmp_path, report_path)
 
 
+def test_persisted_target_rejects_unrelated_sat_quote(tmp_path: Path) -> None:
+    report = _report(status="PASS")
+    report["checkpoints"] = [
+        {
+            "id": "project",
+            "source": "project appears",
+            "expected": "the project is visible",
+            "required": True,
+            "target": "Course Test",
+        }
+    ]
+    report["observations"][0]["text"] = "Other"
+    report["verdict"]["evidence"] = [
+        {
+            "checkpoint_id": "project",
+            "observation_id": "o1",
+            "quote": "Other",
+            "status": "SAT",
+        }
+    ]
+
+    with pytest.raises(ValueError):
+        load_run(tmp_path, _write_report(tmp_path / "run", report))
+
+
 def test_corrupt_and_incomplete_reports_are_unavailable(tmp_path: Path) -> None:
     valid = tmp_path / "valid"
     corrupt = tmp_path / "corrupt"
