@@ -138,6 +138,56 @@ def test_both_scoped_locations_can_pass() -> None:
     assert verdict_from_evidence(checkpoints, evidence, (observation,)).status == "PASS"
 
 
+def test_scoped_evidence_must_match_checkpoint_region_scope() -> None:
+    checkpoint = Checkpoint("dashboard", "appears on dashboard", "Course Test", True, "dashboard")
+    observation = Observation(
+        "o-mismatch",
+        "https://example.test",
+        "Course Test",
+        "shot.png",
+        "mismatch",
+        (ObservationRegion("sidebar", "Course Test", "aside"),),
+    )
+    evidence = Evidence("dashboard", observation.id, "Course Test", "SAT", "sidebar")
+
+    assert verdict_from_evidence((checkpoint,), (evidence,), (observation,)).status == "UNKNOWN"
+
+
+def test_two_checkpoints_citing_one_region_cannot_pass() -> None:
+    observation = Observation(
+        "o-one-region",
+        "https://example.test",
+        "Course Test",
+        "shot.png",
+        "one-region",
+        (ObservationRegion("dashboard", "Course Test", "main"),),
+    )
+    checkpoints = (
+        Checkpoint("first", "first assertion", "Course Test", True, "dashboard"),
+        Checkpoint("second", "second assertion", "Course Test", True, "dashboard"),
+    )
+    evidence = (
+        Evidence("first", observation.id, "Course Test", "SAT", "dashboard"),
+        Evidence("second", observation.id, "Course Test", "SAT", "dashboard"),
+    )
+
+    assert verdict_from_evidence(checkpoints, evidence, (observation,)).status == "UNKNOWN"
+
+
+def test_sat_quote_must_contain_expected_target() -> None:
+    checkpoint = Checkpoint("project", "project appears", "Course Test", True)
+    observation = Observation(
+        "o-other",
+        "https://example.test",
+        "Other",
+        "shot.png",
+        "other",
+    )
+    evidence = Evidence("project", observation.id, "Other", "SAT")
+
+    assert verdict_from_evidence((checkpoint,), (evidence,), (observation,)).status == "UNKNOWN"
+
+
 class _FakePlanner:
     def __init__(self, checkpoints: tuple[Checkpoint, ...]) -> None:
         self.checkpoints = checkpoints

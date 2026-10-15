@@ -21,9 +21,13 @@ from .schema import (
     Evidence,
     Observation,
     Scenario,
+    canonical_scope,
+    expected_targets_supported,
+    location_scope_pair,
     parse_action,
     parse_checkpoints,
     parse_evidence,
+    scope_matches_region,
 )
 
 
@@ -154,19 +158,18 @@ class Planner:
                     raise ValueError(
                         f"checkpoint source is not an exact scenario quote: {checkpoint.source!r}"
                     )
-            # A natural-language requirement explicitly spanning multiple
-            # locations must remain atomic.  This generic guard catches a
-            # planner that collapses a "both ... and ..." assertion into one
-            # page-scoped checkpoint while leaving ordinary legacy scenarios
-            # compatible with the default page scope.
-            lowered = scenario.text.casefold()
-            if "both" in lowered and " and " in lowered:
-                if len(checkpoints) < 2 or any(
-                    checkpoint.scope == "page" for checkpoint in checkpoints
-                ):
-                    raise ValueError(
-                        "multi-location scenario requires separately scoped checkpoints"
-                    )
+            # Only standard location pairs are decomposed.  Ordinary prose
+            # containing conjunctions remains compatible with page scope.
+            required_scopes = location_scope_pair(scenario.text)
+            supplied_scopes = {
+                canonical_scope(checkpoint.scope)
+                for checkpoint in checkpoints
+                if checkpoint.scope != "page"
+            }
+            if required_scopes and not required_scopes.issubset(supplied_scopes):
+                raise ValueError(
+                    "multi-location scenario requires separately scoped checkpoints"
+                )
             return checkpoints
 
         return retry_parse(self.provider, system, user, parse)
@@ -322,10 +325,20 @@ class Verifier:
                         (region for region in observation.regions if region.id == item.region_id),
                         None,
                     )
-                    if region is None or item.quote not in region.text:
+                    if (
+                        region is None
+                        or not scope_matches_region(checkpoint.scope, region.id, region.locator)
+                        or item.quote not in region.text
+                    ):
                         raise ValueError(
                             f"evidence quote is not grounded in region {item.region_id}"
                         )
+                if item.status == "SAT" and not expected_targets_supported(
+                    checkpoint.expected, item.quote
+                ):
+                    raise ValueError(
+                        f"SAT evidence misses the expected target for {checkpoint.id}"
+                    )
             if "gap_request" not in raw:
                 return evidence
             gap_raw = raw["gap_request"]

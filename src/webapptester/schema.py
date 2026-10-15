@@ -1,7 +1,7 @@
 """Immutable, validated values shared by the web tester roles."""
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 from typing import Final
 
 
@@ -15,6 +15,8 @@ VERDICT_STATUSES: Final[frozenset[str]] = frozenset(
     {"PASS", "FAIL", "UNKNOWN"}
 )
 _COMBINED_SCOPE = re.compile(r"(?:\s+(?:and|or)\s+|[,/&|])", re.IGNORECASE)
+_SCOPE_ALIASES: Final[dict[str, str]] = {"dashboard": "main", "sidebar": "aside"}
+_TARGET_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
 
 
 def _require_text(value: object, field: str, *, nonempty: bool = True) -> str:
@@ -29,6 +31,49 @@ def is_atomic_scope(value: str) -> bool:
     """Return whether a scope names one observable region."""
 
     return bool(value.strip()) and _COMBINED_SCOPE.search(value) is None
+
+
+def canonical_scope(value: str) -> str:
+    """Normalize the small semantic aliases accepted for standard regions."""
+
+    normalized = value.strip().casefold()
+    return _SCOPE_ALIASES.get(normalized, normalized)
+
+
+def expected_targets_supported(expected: str, quote: str) -> bool:
+    """Require explicit target words in a SAT quote when the expectation has them.
+
+    Title-cased or identifier-like words are the observable target portion of
+    natural-language expectations (for example ``Course Test`` or ``Alpha``).
+    Generic expectations such as ``visible state`` intentionally impose no
+    extra lexical constraint and remain governed by quote provenance.
+    """
+
+    targets = tuple(
+        token.casefold()
+        for token in _TARGET_TOKEN.findall(expected)
+        if token[0].isupper() or any(character.isdigit() for character in token)
+    )
+    lowered_quote = quote.casefold()
+    return all(target in lowered_quote for target in targets)
+
+
+def location_scope_pair(text: str) -> frozenset[str]:
+    """Return canonical standard regions explicitly named as a pair."""
+
+    lowered = text.casefold()
+    if "dashboard" in lowered and "sidebar" in lowered:
+        return frozenset({"main", "aside"})
+    if "main" in lowered and "aside" in lowered:
+        return frozenset({"main", "aside"})
+    return frozenset()
+
+
+def scope_matches_region(scope: str, region_id: str, locator: str) -> bool:
+    """Bind a checkpoint scope to the captured region identity or locator."""
+
+    declared = canonical_scope(scope)
+    return declared in {canonical_scope(region_id), canonical_scope(locator)}
 
 
 @dataclass(frozen=True, slots=True)

@@ -7,7 +7,12 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
-from .schema import ACTION_KINDS, is_atomic_scope
+from .schema import (
+    ACTION_KINDS,
+    expected_targets_supported,
+    is_atomic_scope,
+    scope_matches_region,
+)
 
 _STATUSES = frozenset({"PASS", "FAIL", "UNKNOWN"})
 _EVIDENCE_STATUSES = frozenset({"SAT", "VIOLATED", "UNKNOWN"})
@@ -358,9 +363,20 @@ def _validate_evidence(
                 or not region_id.strip()
                 or not isinstance(region, dict)
                 or not isinstance(region.get("text"), str)
+                or not scope_matches_region(
+                    str(checkpoint["scope"]),
+                    str(region.get("id", "")),
+                    str(region.get("locator", "")),
+                )
                 or item["quote"] not in region["text"]
             ):
                 raise ValueError("scoped evidence is not grounded in an observation region")
+        if (
+            checkpoint is not None
+            and item["status"] == "SAT"
+            and not expected_targets_supported(str(checkpoint["expected"]), item["quote"])
+        ):
+            raise ValueError("SAT evidence misses the expected target")
 
     if checkpoints:
         required_ids = {
@@ -369,6 +385,17 @@ def _validate_evidence(
         evidenced_ids = {item["checkpoint_id"] for item in evidence}
         if not required_ids.issubset(evidenced_ids):
             raise ValueError("evidence is missing a required checkpoint")
+        scoped_regions: set[tuple[str, str]] = set()
+        for item in evidence:
+            checkpoint = next(
+                candidate for candidate in checkpoints if candidate["id"] == item["checkpoint_id"]
+            )
+            if checkpoint.get("scope", "page") == "page":
+                continue
+            key = (item["observation_id"], item.get("region_id", ""))
+            if key in scoped_regions:
+                raise ValueError("scoped checkpoints cite the same observation region")
+            scoped_regions.add(key)
 
 
 def _validate_verdict_consistency(

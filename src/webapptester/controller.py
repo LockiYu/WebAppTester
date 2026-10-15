@@ -15,7 +15,16 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .browser import BudgetExhausted
-from .schema import Action, Checkpoint, Evidence, Observation, Scenario, Verdict
+from .schema import (
+    Action,
+    Checkpoint,
+    Evidence,
+    Observation,
+    Scenario,
+    Verdict,
+    expected_targets_supported,
+    scope_matches_region,
+)
 
 
 MAX_STEPS = 35
@@ -111,19 +120,19 @@ def verdict_from_evidence(
         scope = getattr(checkpoint, "scope", "page")
         region_id = getattr(item, "region_id", "")
         if scope != "page":
-            regions = getattr(observation, "regions", ())
-            region = next((candidate for candidate in regions if candidate.id == region_id), None)
-            if (
-                not isinstance(region_id, str)
-                or not region_id.strip()
-                or region is None
-                or quote not in region.text
-            ):
+            region = _scoped_region(observation, scope, region_id)
+            if region is None or quote not in region.text:
                 return Verdict(
                     status="UNKNOWN",
                     evidence=evidence_values,
                     reason=f"required checkpoint {checkpoint_id} lacks region-grounded evidence",
                 )
+        if status == "SAT" and not expected_targets_supported(checkpoint.expected, quote):
+            return Verdict(
+                status="UNKNOWN",
+                evidence=evidence_values,
+                reason=f"required checkpoint {checkpoint_id} SAT quote misses its expected target",
+            )
         evidence_by_checkpoint.setdefault(checkpoint_id, []).append(item)
 
     supported: dict[str, Evidence] = {}
@@ -156,26 +165,35 @@ def verdict_from_evidence(
             )
         if getattr(checkpoint, "scope", "page") != "page":
             region_id = getattr(item, "region_id", "")
-            region = next(
-                (
-                    candidate
-                    for candidate in getattr(observation, "regions", ())
-                    if candidate.id == region_id
-                ),
-                None,
-            )
-            if (
-                not isinstance(region_id, str)
-                or not region_id.strip()
-                or region is None
-                or quote not in region.text
-            ):
+            region = _scoped_region(observation, checkpoint.scope, region_id)
+            if region is None or quote not in region.text:
                 return Verdict(
                     status="UNKNOWN",
                     evidence=evidence_values,
                     reason=f"required checkpoint {checkpoint.id} lacks region-grounded evidence",
                 )
+        if status == "SAT" and not expected_targets_supported(checkpoint.expected, quote):
+            return Verdict(
+                status="UNKNOWN",
+                evidence=evidence_values,
+                reason=f"required checkpoint {checkpoint.id} SAT quote misses its expected target",
+            )
         supported[checkpoint.id] = item
+
+    scoped_regions: set[tuple[str, str]] = set()
+    for checkpoint, item in (
+        (checkpoint, supported[checkpoint.id])
+        for checkpoint in required
+        if getattr(checkpoint, "scope", "page") != "page"
+    ):
+        key = (item.observation_id, item.region_id)
+        if key in scoped_regions:
+            return Verdict(
+                status="UNKNOWN",
+                evidence=evidence_values,
+                reason="required scoped checkpoints cite the same observation region",
+            )
+        scoped_regions.add(key)
 
     if any(item.status == "UNKNOWN" for item in supported.values()):
         return Verdict(
@@ -194,6 +212,21 @@ def verdict_from_evidence(
         evidence=evidence_values,
         reason="all required checkpoints have supported SAT evidence",
     )
+
+
+def _scoped_region(
+    observation: Observation, scope: str, region_id: object
+) -> object | None:
+    """Resolve evidence only through the checkpoint's declared region scope."""
+
+    if not isinstance(region_id, str) or not region_id.strip():
+        return None
+    for region in getattr(observation, "regions", ()):
+        if region.id != region_id:
+            continue
+        if scope_matches_region(scope, region.id, region.locator):
+            return region
+    return None
 
 
 class Controller:

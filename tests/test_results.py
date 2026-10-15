@@ -111,6 +111,36 @@ def test_scoped_checkpoint_and_region_metadata_are_loaded(tmp_path: Path) -> Non
     assert run.observations[0]["regions"][0]["id"] == "dashboard"
 
 
+def test_persisted_scoped_evidence_must_match_region_scope(tmp_path: Path) -> None:
+    report = _report(status="PASS")
+    report["checkpoints"] = [
+        {
+            "id": "dashboard",
+            "source": "appears on dashboard",
+            "expected": "Course Test",
+            "required": True,
+            "scope": "dashboard",
+        }
+    ]
+    report["observations"][0]["text"] = "Course Test"
+    report["observations"][0]["regions"] = [
+        {"id": "sidebar", "text": "Course Test", "locator": "aside"}
+    ]
+    report["verdict"]["evidence"] = [
+        {
+            "checkpoint_id": "dashboard",
+            "observation_id": "o1",
+            "quote": "Course Test",
+            "status": "SAT",
+            "region_id": "sidebar",
+        }
+    ]
+    report_path = _write_report(tmp_path / "run", report)
+
+    with pytest.raises(ValueError):
+        load_run(tmp_path, report_path)
+
+
 def test_corrupt_and_incomplete_reports_are_unavailable(tmp_path: Path) -> None:
     valid = tmp_path / "valid"
     corrupt = tmp_path / "corrupt"

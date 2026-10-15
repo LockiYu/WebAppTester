@@ -279,3 +279,40 @@ def test_dashboard_exports_drop_cookie_fields_and_never_offer_trace_download(
     at = _dashboard_app(tmp_path, monkeypatch).run(timeout=20)
     at.checkbox[0].set_value(True).run()
     assert not any(button.label == "Download trace.zip" for button in at.download_button)
+
+
+def test_report_export_preserves_scoped_contract_metadata(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    run_dir = _write_run(runs, "scoped", status="PASS", reason="ok", trace=None)
+    report_path = run_dir / "report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["checkpoints"] = [
+        {
+            "id": "dashboard",
+            "source": "appears on dashboard",
+            "expected": "Course Test",
+            "required": True,
+            "scope": "dashboard",
+        }
+    ]
+    report["observations"][0]["regions"] = [
+        {"id": "dashboard", "text": "Course Test", "locator": "main"}
+    ]
+    report["observations"][0]["text"] = "Course Test"
+    report["verdict"]["evidence"] = [
+        {
+            "checkpoint_id": "dashboard",
+            "observation_id": "o1",
+            "quote": "Course Test",
+            "status": "SAT",
+            "region_id": "dashboard",
+        }
+    ]
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    selected = list_runs(runs)[0]
+    exported = json.loads((_report_export(runs, selected) or b"{}").decode("utf-8"))
+
+    assert exported["checkpoints"][0]["scope"] == "dashboard"
+    assert exported["observations"][0]["regions"][0]["id"] == "dashboard"
+    assert exported["verdict"]["evidence"][0]["region_id"] == "dashboard"

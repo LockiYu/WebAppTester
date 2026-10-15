@@ -41,12 +41,30 @@ def _safe_locator(locator: str) -> str:
 
 def _safe_observation(observation: dict[str, object]) -> dict[str, object]:
     fields = ("id", "url", "text", "screenshot", "fingerprint")
-    return {key: observation[key] for key in fields if key in observation}
+    safe = {key: observation[key] for key in fields if key in observation}
+    regions = observation.get("regions", [])
+    if isinstance(regions, list):
+        safe["regions"] = [
+            {
+                key: region[key]
+                for key in ("id", "text", "locator")
+                if isinstance(region, dict) and key in region and isinstance(region[key], str)
+            }
+            for region in regions
+            if isinstance(region, dict)
+            and all(isinstance(region.get(key), str) for key in ("id", "text", "locator"))
+        ]
+    return safe
 
 
 def _safe_evidence(item: dict[str, str]) -> dict[str, str]:
-    fields = ("checkpoint_id", "observation_id", "quote", "status")
+    fields = ("checkpoint_id", "observation_id", "quote", "status", "region_id")
     return {key: item[key] for key in fields}
+
+
+def _safe_checkpoint(item: dict[str, object]) -> dict[str, object]:
+    fields = ("id", "source", "expected", "required", "scope")
+    return {key: item[key] for key in fields if key in item}
 
 
 def _trace_artifact(root: Path, run: RunRecord) -> Path | None:
@@ -69,6 +87,7 @@ def _report_export(root: Path, run: RunRecord) -> bytes | None:
             "completion": run.token_usage.get("completion", 0),
         },
         "trace_path": "trace.zip" if trace is not None else None,
+        "checkpoints": [_safe_checkpoint(item) for item in run.checkpoints],
         "actions": [_safe_action(action) for action in run.actions],
         "observations": [_safe_observation(item) for item in run.observations],
         "verdict": {
@@ -152,6 +171,20 @@ def _safe_event(raw: object) -> dict[str, Any] | None:
                 if not isinstance(value, str):
                     return None
                 safe_observation[key] = value
+        regions = raw.get("regions")
+        if regions is not None:
+            if not isinstance(regions, list):
+                return None
+            safe_regions: list[dict[str, str]] = []
+            for region in regions:
+                if not isinstance(region, dict) or any(
+                    not isinstance(region.get(key), str) for key in ("id", "text", "locator")
+                ):
+                    return None
+                safe_regions.append(
+                    {key: region[key] for key in ("id", "text", "locator")}
+                )
+            safe_observation["regions"] = safe_regions
         return safe_observation
     return None
 

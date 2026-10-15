@@ -99,6 +99,26 @@ def test_planner_rejects_combined_scope_for_multi_location_requirement() -> None
         Planner(provider).plan(scenario)
 
 
+def test_planner_keeps_ordinary_both_and_prose_page_scoped() -> None:
+    scenario = Scenario("Verify both Alice and Bob are listed", "http://localhost")
+    provider = FakeProvider(
+        {
+            "checkpoints": [
+                {
+                    "id": "listed",
+                    "source": "Verify both Alice and Bob are listed",
+                    "expected": "Alice and Bob are listed",
+                    "required": True,
+                }
+            ]
+        }
+    )
+
+    checkpoints = Planner(provider).plan(scenario)
+
+    assert checkpoints[0].scope == "page"
+
+
 def test_executor_retries_unsupported_action_then_returns_action() -> None:
     provider = FakeProvider(
         {"action": {"kind": "evaluate"}},
