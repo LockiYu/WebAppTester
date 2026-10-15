@@ -4,6 +4,7 @@ import os
 import time
 from pathlib import Path
 
+import pytest
 import streamlit
 
 from streamlit.testing.v1 import AppTest
@@ -68,7 +69,22 @@ def _write_run(
         screenshot_path.write_bytes(_PNG)
     if trace:
         (run / trace).write_bytes(b"trace")
-    (run / "events.jsonl").write_text('{"event":"done"}\n', encoding="utf-8")
+    (run / "events.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "action",
+                "action": {
+                    "kind": "fill",
+                    "locator": "#password",
+                    "value": "secret",
+                    "input": "another secret",
+                    "arbitrary": "discard this",
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     return run
 
 
@@ -107,9 +123,11 @@ def test_dashboard_history_and_selected_run_show_evidence_and_artifacts(
     history_text = str(at.dataframe[0].value)
     assert "PASS" in history_text
     assert "FAIL" in history_text
-    assert any("scripted/local" in source for source in at.dataframe[0].value["Source"].tolist())
+    assert all("source unknown" in source for source in at.dataframe[0].value["Source"].tolist())
 
     at.selectbox[0].set_value(1).run()
+
+    at.checkbox[0].set_value(True).run()
 
     text = "\n".join(
         [item.value for item in at.markdown]
@@ -126,6 +144,7 @@ def test_dashboard_history_and_selected_run_show_evidence_and_artifacts(
     assert "Completion tokens" in text
     assert "o1" in text
     assert "project dashboard" in text
+    assert "may contain sensitive page content" in text
     assert "Unavailable" in text or "unavailable" in text
     assert any(button.label == "Download report.json" for button in at.download_button)
     assert any(button.label == "Download events.jsonl" for button in at.download_button)
@@ -135,6 +154,7 @@ def test_dashboard_history_and_selected_run_show_evidence_and_artifacts(
     assert not any(button.label == "Download trace.zip" for button in at.download_button)
 
     at.selectbox[0].set_value(0).run()
+    at.checkbox[0].set_value(True).run()
     assert any(button.label == "Download trace.zip" for button in at.download_button)
 
 

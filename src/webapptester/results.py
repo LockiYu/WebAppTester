@@ -7,6 +7,7 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
+from .schema import ACTION_KINDS
 
 _STATUSES = frozenset({"PASS", "FAIL", "UNKNOWN"})
 _EVIDENCE_STATUSES = frozenset({"SAT", "VIOLATED", "UNKNOWN"})
@@ -182,9 +183,16 @@ def _parse_actions(raw: object) -> tuple[dict[str, str], ...]:
         raise ValueError("actions must be a list of dictionaries")
     actions: list[dict[str, str]] = []
     for item in raw:
-        safe_item = {key: value for key, value in item.items() if key != "value"}
-        if any(not isinstance(key, str) or not isinstance(value, str) for key, value in safe_item.items()):
-            raise ValueError("action fields must be strings")
+        safe_item: dict[str, str] = {}
+        for key in ("kind", "locator", "checkpoint_id"):
+            if key not in item:
+                continue
+            value = item[key]
+            if not isinstance(value, str):
+                raise ValueError("action fields must be strings")
+            safe_item[key] = value
+        if safe_item.get("kind") not in ACTION_KINDS:
+            raise ValueError("action kind is invalid")
         actions.append(safe_item)
     return tuple(actions)
 

@@ -13,11 +13,9 @@ from webapptester.results import RunRecord, artifact_path, list_runs
 
 
 def _source_label(run: RunRecord) -> str:
-    """Describe the source without guessing at a provider or model."""
+    """Describe source metadata without guessing at a provider or model."""
 
-    if run.token_usage.get("prompt", 0) == 0 and run.token_usage.get("completion", 0) == 0:
-        return "scripted/local · provider metadata unavailable"
-    return "provider unspecified · token usage recorded"
+    return "source unknown · provider metadata unavailable"
 
 
 def _history_label(run: RunRecord) -> str:
@@ -34,17 +32,22 @@ def _read_artifact(root: Path, run: RunRecord, relative_path: str) -> bytes | No
         return None
 
 
-def _redact_values(value: Any) -> Any:
-    """Remove action input values before exposing persisted JSON for download."""
+def _redact_values(value: Any, *, action_context: bool = False) -> Any:
+    """Keep only safe action fields while recursively sanitizing JSON exports."""
 
     if isinstance(value, dict):
-        return {
-            key: _redact_values(item)
-            for key, item in value.items()
-            if key != "value"
-        }
+        looks_like_action = action_context or (
+            "kind" in value
+            and any(key in value for key in ("locator", "checkpoint_id", "value", "input"))
+        )
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            if looks_like_action and key not in {"kind", "locator", "checkpoint_id"}:
+                continue
+            result[key] = _redact_values(item, action_context=looks_like_action or key == "action")
+        return result
     if isinstance(value, list):
-        return [_redact_values(item) for item in value]
+        return [_redact_values(item, action_context=action_context) for item in value]
     return value
 
 
@@ -78,7 +81,7 @@ def _artifact_warning(label: str) -> None:
     st.warning(f"{label} unavailable for this run.")
 
 
-def _render_downloads(root: Path, run: RunRecord) -> None:
+def _render_downloads(root: Path, run: RunRecord, *, reveal_raw: bool) -> None:
     st.subheader("Downloads")
     columns = st.columns(3)
     download_specs = (
@@ -100,6 +103,9 @@ def _render_downloads(root: Path, run: RunRecord) -> None:
                 )
 
     with columns[2]:
+        if not reveal_raw:
+            st.caption("Raw trace hidden until evidence is revealed.")
+            return
         trace = run.trace
         if trace is None:
             _artifact_warning("trace.zip")
@@ -173,11 +179,6 @@ def _render_screenshots(root: Path, run: RunRecord) -> None:
             st.warning(f"Screenshot for {observation_id} unavailable.")
 
 
-def _render_trace(run: RunRecord) -> None:
-    if run.trace is None:
-        st.warning("Trace unavailable for this run.")
-
-
 def _render_selected_run(root: Path, run: RunRecord) -> None:
     st.subheader(f"Run: {run.directory.name}")
     metrics = st.columns(5)
@@ -196,9 +197,19 @@ def _render_selected_run(root: Path, run: RunRecord) -> None:
 
     _render_evidence(run)
     _render_actions(run)
-    _render_screenshots(root, run)
-    _render_trace(run)
-    _render_downloads(root, run)
+    reveal_raw = st.checkbox(
+        "Reveal raw page evidence",
+        help="Screenshots and Playwright traces may contain sensitive page content.",
+        key=f"reveal-{run.directory}",
+    )
+    if reveal_raw:
+        st.warning(
+            "Raw screenshots and Playwright Trace may contain sensitive page content."
+        )
+        _render_screenshots(root, run)
+    else:
+        st.info("Raw screenshots and Trace are hidden until you reveal page evidence.")
+    _render_downloads(root, run, reveal_raw=reveal_raw)
 
 
 def render(root: Path) -> None:

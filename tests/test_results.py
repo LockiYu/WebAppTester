@@ -160,13 +160,21 @@ def test_legacy_absolute_and_working_directory_artifacts_are_allowed_only_inside
 
 def test_action_values_are_not_exposed(tmp_path: Path) -> None:
     report = _report(status="UNKNOWN", evidence=[])
-    report["actions"] = [{"kind": "fill", "locator": "#password", "value": "secret"}]
+    report["actions"] = [
+        {
+            "kind": "fill",
+            "locator": "#password",
+            "value": "secret",
+            "input": "another secret",
+            "arbitrary": "discard this",
+        }
+    ]
     report_path = _write_report(tmp_path / "run", report)
 
     run = load_run(tmp_path, report_path)
 
     assert run.actions == ({"kind": "fill", "locator": "#password"},)
-    assert all("value" not in action for action in run.actions)
+    assert all(set(action) <= {"kind", "locator", "checkpoint_id"} for action in run.actions)
 
 
 def test_load_run_rejects_report_outside_root(tmp_path: Path) -> None:

@@ -50,10 +50,12 @@ Install the optional Streamlit UI and start the read-only dashboard with:
 
 ```sh
 .venv/bin/pip install -e '.[test,ui]'
-.venv/bin/streamlit run src/webapptester/dashboard.py -- --runs-root runs
+.venv/bin/streamlit run src/webapptester/dashboard.py --server.address 127.0.0.1 -- --runs-root runs
 ```
 
 Open [http://127.0.0.1:8501](http://127.0.0.1:8501) to inspect the run history,
 checkpoint evidence, actions, screenshots, and available report artifacts. The
 `runs/` directory is local demo output and is ignored by Git; configure another
-local root with `--runs-root` when needed.
+local root with `--runs-root` when needed. Screenshots and Playwright Trace are
+raw page evidence and may contain sensitive page content; the dashboard keeps
+them hidden until you explicitly select the raw-evidence reveal control.
