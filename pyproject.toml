@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "webapptester"
+version = "0.1.0"
+description = "Evidence-gated autonomous web application tester"
+requires-python = ">=3.11"
+dependencies = [
+    "playwright>=1.55,<2",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8,<10",
+]
+
+[project.scripts]
+webapptester = "webapptester.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
