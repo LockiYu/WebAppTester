@@ -177,7 +177,6 @@ class Controller:
         gap_request: GapRequest | None = None
         current_verdict = Verdict("UNKNOWN", (), "run has not produced evidence")
         repeat_counts: dict[tuple[str, tuple[object, ...]], int] = {}
-        action_failure = False
         ambiguous_locator_retries = 0
         failure_hint = ""
         stop_reason: str | None = None
@@ -259,7 +258,10 @@ class Controller:
                             continue
                         stop_reason = "ambiguous locator retries exhausted"
                         break
-                    action_failure = True
+                    initial = self.browser.observe(self.store)
+                    observations.append(initial)
+                    stop_reason = "browser action failed"
+                    break
 
                 failure_hint = ""
                 initial = self.browser.observe(self.store)
@@ -269,23 +271,13 @@ class Controller:
                 current_verdict = verdict_from_evidence(checkpoints, evidence, observations)
 
                 if current_verdict.status in {"PASS", "FAIL"}:
-                    if action_failure:
-                        current_verdict = Verdict(
-                            "UNKNOWN",
-                            tuple(evidence),
-                            "a browser action failed; the result cannot be classified as an application verdict",
-                        )
-                    else:
-                        return self._finish(
-                            current_verdict,
-                            checkpoints,
-                            actions,
-                            observations,
-                            started,
-                        )
-                if action_failure:
-                    stop_reason = "browser action failed"
-                    break
+                    return self._finish(
+                        current_verdict,
+                        checkpoints,
+                        actions,
+                        observations,
+                        started,
+                    )
 
             if stop_reason:
                 current_verdict = Verdict(
@@ -386,32 +378,30 @@ class Controller:
             for parameter in parameters.values()
         )
 
-        def accepts_keyword(name: str) -> bool:
+        def explicit_keyword(name: str) -> bool:
             parameter = parameters.get(name)
-            if parameter is None:
-                return accepts_var_kwargs
-            return parameter.kind in {
+            return parameter is not None and parameter.kind in {
                 inspect.Parameter.POSITIONAL_OR_KEYWORD,
                 inspect.Parameter.KEYWORD_ONLY,
             }
 
         optional: dict[str, object] = {}
-        if accepts_keyword("gap_request"):
+        if explicit_keyword("gap_request"):
             optional["gap_request"] = gap_request
-        elif accepts_keyword("gap"):
+        elif explicit_keyword("gap"):
             optional["gap"] = gap_request
+        elif accepts_var_kwargs:
+            optional["gap_request"] = gap_request
 
         snapshot = self._latest_snapshot()
-        if accepts_keyword("accessibility_snapshot"):
+        if explicit_keyword("accessibility_snapshot"):
             optional["accessibility_snapshot"] = snapshot
-        elif accepts_keyword("latest_snapshot"):
+        elif explicit_keyword("latest_snapshot"):
             optional["latest_snapshot"] = snapshot
         elif accepts_var_kwargs:
             optional["accessibility_snapshot"] = snapshot
 
-        if accepts_keyword("failure_hint"):
-            optional["failure_hint"] = failure_hint
-        elif accepts_var_kwargs:
+        if explicit_keyword("failure_hint") or accepts_var_kwargs:
             optional["failure_hint"] = failure_hint
 
         return method(scenario, checkpoints, observation, history, **optional)
