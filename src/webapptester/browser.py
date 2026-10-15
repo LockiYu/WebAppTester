@@ -182,14 +182,11 @@ _ROLE_LOCATOR = re.compile(r"^role=([^;\s]+);name=(.+)$")
 _REF_LOCATOR = re.compile(r"^ref=(e\d+)$")
 _REF = re.compile(r"\[ref=(e\d+)\]")
 _SNAPSHOT_VALUE = re.compile(r"^(?P<prefix>\s*-\s*/value:\s*).*$", re.IGNORECASE)
-_TEXTBOX_VALUE_AFTER_REF = re.compile(
-    r"^(?P<prefix>\s*-\s*textbox\b.*?\[ref=e\d+\])\s*:\s*.*$",
+_INPUT_ROLE_LINE = re.compile(
+    r"^\s*-\s*(?:textbox|searchbox|combobox|spinbutton)\b",
     re.IGNORECASE,
 )
-_TEXTBOX_VALUE_BEFORE_REF = re.compile(
-    r"^(?P<prefix>\s*-\s*textbox\b.*?):\s*.*?(?P<ref>\s+\[ref=e\d+\])\s*$",
-    re.IGNORECASE,
-)
+_REF_TOKEN = re.compile(r"\[ref=e\d+\]")
 _NUMBER = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)"
 _SCROLL_PAIR = re.compile(rf"^\s*({_NUMBER})\s*(?:,|\s+)\s*({_NUMBER})\s*$")
 _SCROLL_SINGLE = re.compile(rf"^\s*({_NUMBER})\s*$")
@@ -203,7 +200,7 @@ def _role_locator(locator: str) -> tuple[str, str]:
 
 
 def _sanitize_snapshot(snapshot: str) -> str:
-    """Redact textbox values while retaining labels, refs, and structure."""
+    """Redact input values while retaining labels, refs, and structure."""
 
     sanitized: list[str] = []
     for line in snapshot.splitlines():
@@ -211,18 +208,54 @@ def _sanitize_snapshot(snapshot: str) -> str:
         if value_line is not None:
             sanitized.append(f"{value_line.group('prefix')}<redacted>")
             continue
-        inline_value = _TEXTBOX_VALUE_AFTER_REF.match(line)
-        if inline_value is not None:
-            sanitized.append(f"{inline_value.group('prefix')}: <redacted>")
-            continue
-        inline_value = _TEXTBOX_VALUE_BEFORE_REF.match(line)
-        if inline_value is not None:
-            sanitized.append(
-                f"{inline_value.group('prefix')}: <redacted>{inline_value.group('ref')}"
-            )
+        if _INPUT_ROLE_LINE.match(line) is not None:
+            sanitized.append(_sanitize_input_role_line(line))
             continue
         sanitized.append(line)
     return "\n".join(sanitized)
+
+
+def _sanitize_input_role_line(line: str) -> str:
+    """Redact the value after an input role's unquoted colon.
+
+    Accessible names are quoted and state/ref annotations are bracketed, so a
+    colon outside both forms identifies the inline control value. Preserve any
+    refs that follow that value so the model can still act on the control.
+    """
+
+    colon = _unquoted_colon(line)
+    if colon is None:
+        return line
+    prefix = line[: colon + 1]
+    suffix = line[colon + 1 :]
+    refs = _REF_TOKEN.findall(suffix)
+    if refs:
+        return f"{prefix} <redacted>{''.join(f' {ref}' for ref in refs)}"
+    return f"{prefix} <redacted>"
+
+
+def _unquoted_colon(line: str) -> int | None:
+    in_quotes = False
+    escaped = False
+    bracket_depth = 0
+    for index, character in enumerate(line):
+        if in_quotes:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_quotes = False
+            continue
+        if character == '"':
+            in_quotes = True
+        elif character == "[":
+            bracket_depth += 1
+        elif character == "]":
+            bracket_depth = max(0, bracket_depth - 1)
+        elif character == ":" and bracket_depth == 0:
+            return index
+    return None
 
 
 def _number(value: str) -> int | float:

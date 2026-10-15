@@ -155,6 +155,31 @@ def test_observation_keeps_sanitized_snapshot_and_dispatches_latest_ref():
     assert current.success is True
 
 
+def test_snapshot_redacts_inline_values_for_all_input_roles():
+    snapshot = "\n".join(
+        [
+            '- searchbox "Search: docs": SEARCH_SECRET [ref=e3]',
+            '- spinbutton "Age" [ref=e4]: 42',
+            '- combobox "Country": COUNTRY_SECRET [ref=e5]',
+            '- button "Save: now" [ref=e6]',
+            '- text: Visible static text',
+        ]
+    )
+    page = _SnapshotPage([snapshot])
+    gateway = BrowserGateway(page, max_steps=1)
+
+    gateway.observe(_Store())
+
+    assert "SEARCH_SECRET" not in gateway.latest_snapshot
+    assert "COUNTRY_SECRET" not in gateway.latest_snapshot
+    assert "42" not in gateway.latest_snapshot
+    assert '- searchbox "Search: docs": <redacted> [ref=e3]' in gateway.latest_snapshot
+    assert '- spinbutton "Age" [ref=e4]: <redacted>' in gateway.latest_snapshot
+    assert '- combobox "Country": <redacted> [ref=e5]' in gateway.latest_snapshot
+    assert '- button "Save: now" [ref=e6]' in gateway.latest_snapshot
+    assert "- text: Visible static text" in gateway.latest_snapshot
+
+
 @pytest.mark.parametrize("locator", ["ref=e", "ref=x1", "ref=e1x", "ref="])
 def test_malformed_ref_is_rejected_without_page_dispatch(locator):
     page = _SnapshotPage(["- button \"Save\" [ref=e1]"])
