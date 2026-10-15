@@ -11,6 +11,9 @@ dependencies = [
     "playwright>=1.55,<2",
 ]
 
+[project.scripts]
+webapptester = "webapptester.cli:main"
+
 [project.optional-dependencies]
 test = [
     "pytest>=8,<10",
