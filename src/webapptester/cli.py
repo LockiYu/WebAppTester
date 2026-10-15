@@ -16,7 +16,7 @@ from .browser import BrowserGateway, MAX_STEPS
 from .controller import Controller
 from .providers import DeepSeekProvider, ModelOutputError, OllamaProvider
 from .roles import Executor, Planner, Verifier
-from .schema import Scenario
+from .schema import Action, Scenario
 from .store import RunStore
 
 
@@ -110,9 +110,40 @@ def run(args: argparse.Namespace) -> tuple[int, Path]:
                 gateway = BrowserGateway(page, max_steps=max_steps)
                 gateway.trace_path = trace_path
                 controller = Controller(planner, executor, verifier, gateway, store)
-                verdict = controller.run(scenario)
-                verdict_status = verdict.status
-                report = output / "report.json"
+                # Start every CLI run on the requested page. This consumes one
+                # controlled browser step and avoids asking a small local model
+                # to recover from Playwright's initial about:blank page.
+                initial_navigation = gateway.act(Action("goto", value=scenario.url))
+                store.append_event(
+                    {
+                        "type": "action",
+                        "action": {
+                            "kind": "goto",
+                            "locator": "",
+                            "checkpoint_id": "",
+                        },
+                        "success": initial_navigation.success,
+                        "steps": initial_navigation.steps,
+                    }
+                )
+                if not initial_navigation.success:
+                    report = _unknown_report(
+                        store,
+                        trace_path=trace_path,
+                        started=started,
+                        reason="initial navigation failed",
+                    )
+                    verdict_status = "UNKNOWN"
+                else:
+                    verdict = controller.run(scenario)
+                    verdict_status = verdict.status
+                    report = output / "report.json"
+                if report.exists() and initial_navigation.success:
+                    report_data = json.loads(report.read_text(encoding="utf-8"))
+                    report_data["actions"].insert(
+                        0, {"kind": "goto", "locator": "", "checkpoint_id": ""}
+                    )
+                    store.write_report(report_data)
             finally:
                 if context is not None:
                     try:

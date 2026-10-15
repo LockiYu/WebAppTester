@@ -94,7 +94,9 @@ Return one JSON object with exactly this shape:
 Choose exactly one allowed kind: goto, click, fill, select, scroll, drag, stop.
 Locators are CSS selectors or Playwright role locators formatted role=<role>;name=<name>.
 For drag, use source locator => destination locator. Do not return JavaScript, evaluate,
-arbitrary code, multiple actions, or prose. The controller executes only the action object."""
+arbitrary code, multiple actions, or prose. If the observation URL is about:blank or
+does not match the scenario URL, the next action MUST be goto with the scenario URL.
+The controller executes only the action object."""
 
 
 VERIFIER_SYSTEM = """You are the Verifier role in an evidence-gated Playwright tester.
