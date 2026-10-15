@@ -180,3 +180,19 @@ def test_executor_prompt_receives_gap_request() -> None:
 
     assert '"checkpoint_id": "c1"' in provider.calls[0][1]
     assert "the project appears in the sidebar" in provider.calls[0][1]
+
+
+def test_executor_redacts_prior_action_values_from_provider_history() -> None:
+    provider = FakeProvider({"action": {"kind": "click", "locator": "#next"}})
+
+    Executor(provider).next_action(
+        _scenario(),
+        (),
+        _observation(),
+        (Action("fill", "#password", "super-secret", "c1"),),
+    )
+
+    prompt = provider.calls[0][1]
+    assert "super-secret" not in prompt
+    assert "<redacted>" in prompt
+    assert '"locator": "#password"' in prompt

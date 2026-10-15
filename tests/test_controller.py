@@ -218,3 +218,56 @@ def test_repeated_state_and_action_stops_unknown_before_unbounded_loop() -> None
     assert verdict.status == "UNKNOWN"
     assert browser.steps == 2
     assert "loop limit" in verdict.reason
+
+
+def test_shared_provider_usage_is_counted_once_across_roles() -> None:
+    provider = SimpleNamespace(usage={"prompt": 7, "completion": 3})
+    planner = SimpleNamespace(provider=provider)
+    executor = SimpleNamespace(provider=provider)
+    verifier = SimpleNamespace(provider=provider)
+    controller = Controller(planner, executor, verifier, _FakeBrowser(), _FakeStore())
+
+    assert controller._token_usage() == {"prompt": 7, "completion": 3}
+
+
+class _MalformedGapVerifier:
+    def verify(self, checkpoints, observations):
+        return {
+            "evidence": (),
+            "gap_request": {
+                "checkpoint_id": "c1",
+                "requested_evidence": 123,
+            },
+        }
+
+
+def test_malformed_gap_request_forces_unknown_instead_of_being_ignored() -> None:
+    store = _FakeStore()
+    controller = Controller(
+        _FakePlanner((_checkpoint(),)),
+        _FakeExecutor([Action("click", "#button")]),
+        _MalformedGapVerifier(),
+        _FakeBrowser(),
+        store,
+    )
+
+    verdict = controller.run(_scenario())
+
+    assert verdict.status == "UNKNOWN"
+    assert "ValueError" in verdict.reason
+
+
+def test_unknown_report_preserves_steps_reserved_before_failed_navigation(tmp_path) -> None:
+    from webapptester.cli import _unknown_report
+    from webapptester.store import RunStore
+
+    store = RunStore(tmp_path)
+    report = _unknown_report(
+        store,
+        trace_path=tmp_path / "trace.zip",
+        started=0.0,
+        reason="initial navigation failed",
+        steps=1,
+    )
+
+    assert json.loads(report.read_text())["steps"] == 1

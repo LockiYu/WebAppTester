@@ -181,7 +181,10 @@ class Executor:
                 {
                     "kind": action.kind,
                     "locator": action.locator,
-                    "value": action.value,
+                    # Values may contain passwords, tokens, or other user
+                    # input. Keep the shape useful to the model while never
+                    # sending the prior input itself to a provider.
+                    "value": "<redacted>" if action.value else "",
                     "checkpoint_id": action.checkpoint_id,
                 }
                 for action in history

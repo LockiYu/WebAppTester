@@ -31,6 +31,16 @@ class GapRequest:
     suggested_location: str = ""
     estimated_action_cost: int = 1
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.checkpoint_id, str) or not self.checkpoint_id.strip():
+            raise ValueError("gap request checkpoint_id must be nonempty")
+        if not isinstance(self.requested_evidence, str) or not self.requested_evidence.strip():
+            raise ValueError("gap request requested_evidence must be nonempty")
+        if not isinstance(self.suggested_location, str):
+            raise ValueError("gap request suggested_location must be a string")
+        if type(self.estimated_action_cost) is not int or self.estimated_action_cost < 0:
+            raise ValueError("gap request estimated_action_cost must be non-negative")
+
 
 def verdict_from_evidence(
     checkpoints: Iterable[Checkpoint],
@@ -419,28 +429,80 @@ class Controller:
         if value is None:
             return None
         if isinstance(value, GapRequest):
+            # Validate values even for the native wrapper.  A custom verifier
+            # can construct this object without going through the role parser.
+            Controller._validate_gap_fields(
+                value.checkpoint_id,
+                value.requested_evidence,
+                value.suggested_location,
+                value.estimated_action_cost,
+            )
             return value
         if isinstance(value, dict):
-            try:
-                return GapRequest(
-                    checkpoint_id=str(value["checkpoint_id"]),
-                    requested_evidence=str(value.get("requested_evidence", value.get("missing_evidence", ""))),
-                    suggested_location=str(value.get("suggested_location", "")),
-                    estimated_action_cost=int(value.get("estimated_action_cost", 1)),
-                )
-            except (KeyError, TypeError, ValueError):
-                return None
-        if hasattr(value, "checkpoint_id") and hasattr(value, "requested_evidence"):
-            try:
-                return GapRequest(
-                    checkpoint_id=str(getattr(value, "checkpoint_id")),
-                    requested_evidence=str(getattr(value, "requested_evidence")),
-                    suggested_location=str(getattr(value, "suggested_location", "")),
-                    estimated_action_cost=int(getattr(value, "estimated_action_cost", 1)),
-                )
-            except (TypeError, ValueError):
-                return None
-        return None
+            allowed = {
+                "checkpoint_id",
+                "requested_evidence",
+                "suggested_location",
+                "estimated_action_cost",
+            }
+            if set(value) - allowed:
+                raise ValueError("gap_request has unsupported fields")
+            if "checkpoint_id" not in value or "requested_evidence" not in value:
+                raise ValueError("gap_request has missing required fields")
+            checkpoint_id = value["checkpoint_id"]
+            requested_evidence = value["requested_evidence"]
+            suggested_location = value.get("suggested_location", "")
+            estimated_action_cost = value.get("estimated_action_cost", 1)
+            Controller._validate_gap_fields(
+                checkpoint_id,
+                requested_evidence,
+                suggested_location,
+                estimated_action_cost,
+            )
+            return GapRequest(
+                checkpoint_id=checkpoint_id,
+                requested_evidence=requested_evidence,
+                suggested_location=suggested_location,
+                estimated_action_cost=estimated_action_cost,
+            )
+
+        missing = object()
+        checkpoint_id = getattr(value, "checkpoint_id", missing)
+        requested_evidence = getattr(value, "requested_evidence", missing)
+        if checkpoint_id is missing or requested_evidence is missing:
+            raise ValueError("gap_request must be None or a supported wrapper")
+        suggested_location = getattr(value, "suggested_location", "")
+        estimated_action_cost = getattr(value, "estimated_action_cost", 1)
+        Controller._validate_gap_fields(
+            checkpoint_id,
+            requested_evidence,
+            suggested_location,
+            estimated_action_cost,
+        )
+        return GapRequest(
+            checkpoint_id=checkpoint_id,
+            requested_evidence=requested_evidence,
+            suggested_location=suggested_location,
+            estimated_action_cost=estimated_action_cost,
+        )
+
+    @staticmethod
+    def _validate_gap_fields(
+        checkpoint_id: object,
+        requested_evidence: object,
+        suggested_location: object,
+        estimated_action_cost: object,
+    ) -> None:
+        """Reject malformed gap wrappers instead of coercing them to strings."""
+
+        if not isinstance(checkpoint_id, str) or not checkpoint_id.strip():
+            raise ValueError("gap request checkpoint_id must be nonempty")
+        if not isinstance(requested_evidence, str) or not requested_evidence.strip():
+            raise ValueError("gap request requested_evidence must be nonempty")
+        if not isinstance(suggested_location, str):
+            raise ValueError("gap request suggested_location must be a string")
+        if type(estimated_action_cost) is not int or estimated_action_cost < 0:
+            raise ValueError("gap request estimated_action_cost must be non-negative")
 
     def _trace_path(self) -> str:
         value = getattr(self.browser, "trace_path", None)
@@ -450,8 +512,13 @@ class Controller:
 
     def _token_usage(self) -> dict[str, int]:
         total = {"prompt": 0, "completion": 0}
+        seen_providers: set[int] = set()
         for role in (self.planner, self.executor, self.verifier):
             provider = getattr(role, "provider", role)
+            provider_id = id(provider)
+            if provider_id in seen_providers:
+                continue
+            seen_providers.add(provider_id)
             usage = getattr(provider, "usage", None)
             if usage is None:
                 usage = getattr(provider, "token_usage", None)

@@ -46,10 +46,17 @@ def _make_run_directory(base: Path) -> Path:
     return candidate
 
 
-def _unknown_report(store: RunStore, *, trace_path: Path, started: float, reason: str) -> Path:
+def _unknown_report(
+    store: RunStore,
+    *,
+    trace_path: Path,
+    started: float,
+    reason: str,
+    steps: int = 0,
+) -> Path:
     return store.write_report(
         {
-            "steps": 0,
+            "steps": steps if type(steps) is int and steps >= 0 else 0,
             "elapsed_seconds": max(0.0, time.monotonic() - started),
             "token_usage": {"prompt": 0, "completion": 0},
             "trace_path": str(trace_path),
@@ -147,6 +154,7 @@ def run(args: argparse.Namespace) -> tuple[int, Path]:
                         trace_path=trace_path,
                         started=started,
                         reason="initial navigation failed",
+                        steps=initial_navigation.steps,
                     )
                     verdict_status = "UNKNOWN"
                 else:
