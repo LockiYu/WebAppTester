@@ -107,6 +107,14 @@ class _HydratingPage:
         return '- button "Ready" [ref=e9]'
 
 
+class _BodyReadySnapshotHydratingPage(_HydratingPage):
+    def locator(self, selector):
+        self.calls.append(("locator", selector))
+        if selector == "body":
+            return _BodyLocator()
+        return _WorkingLocator(self)
+
+
 class _Store:
     def save_observation(self, *, url, text, screenshot):
         return Observation(
@@ -201,6 +209,17 @@ def test_observation_waits_for_hydrated_body_and_snapshot_without_spending_steps
     assert gateway.latest_snapshot == '- button "Ready" [ref=e9]'
     assert gateway.steps == 0
     assert ("wait_for_timeout", 50) in page.calls
+
+
+def test_observation_waits_for_snapshot_when_body_mounts_first():
+    page = _BodyReadySnapshotHydratingPage()
+    gateway = BrowserGateway(page, max_steps=2)
+
+    observation = gateway.observe(_Store())
+
+    assert observation.text == "Visible page text"
+    assert gateway.latest_snapshot == '- button "Ready" [ref=e9]'
+    assert page.calls.count(("wait_for_timeout", 50)) == 2
 
 
 def test_snapshot_redacts_inline_values_for_all_input_roles():

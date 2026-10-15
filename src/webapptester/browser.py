@@ -124,7 +124,12 @@ class BrowserGateway:
         return self.page.locator("body").inner_text()[:20_000]
 
     def _observation_is_meaningful(self, text: str) -> bool:
-        return bool(text.strip() or self.latest_snapshot.strip())
+        # A real Playwright page exposes ``aria_snapshot`` even while an SPA's
+        # visible body has already mounted. Keep polling until that semantic
+        # tree is available so ref grounded actions do not race hydration.
+        if callable(getattr(self.page, "aria_snapshot", None)):
+            return bool(self.latest_snapshot.strip())
+        return bool(text.strip())
 
     def _wait_for_observation_ready(self, text: str) -> str:
         """Give a hydrating SPA a short chance to expose visible state.
