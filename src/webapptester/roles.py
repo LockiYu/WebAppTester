@@ -588,48 +588,6 @@ def _is_positive_presence(checkpoint: Checkpoint) -> bool:
     )
 
 
-def _grounded_positive_evidence(
-    checkpoints: tuple[Checkpoint, ...],
-    observation: Observation,
-    start_url: str,
-) -> tuple[Evidence, ...]:
-    """Recover exact visible target evidence when a model returns bad JSON.
-
-    This is deliberately limited to explicit, positive, scoped presence
-    checks. It cannot infer creation, absence, behavior, or a target missing
-    from the latest observation, and it cannot use a detail page as dashboard
-    evidence.
-    """
-
-    required = tuple(item for item in checkpoints if item.required)
-    if (
-        not required
-        or not same_page_url(observation.url, start_url)
-        or any(item.scope == "page" or not _is_positive_presence(item) for item in required)
-    ):
-        return ()
-    evidence: list[Evidence] = []
-    used_regions: set[str] = set()
-    for checkpoint in required:
-        region = next(
-            (
-                item for item in observation.regions
-                if item.id not in used_regions
-                and scope_matches_region(checkpoint.scope, item.id, item.locator)
-                and checkpoint.target in item.text
-                and checkpoint.target in observation.text
-            ),
-            None,
-        )
-        if region is None:
-            return ()
-        used_regions.add(region.id)
-        evidence.append(
-            Evidence(checkpoint.id, observation.id, checkpoint.target, "SAT", region.id)
-        )
-    return tuple(evidence)
-
-
 class Verifier:
     """Map stored observations to evidence with strict provenance checks."""
 
@@ -812,17 +770,7 @@ class Verifier:
             )
             return VerificationResult(evidence=evidence, gap_request=gap)
 
-        try:
-            return retry_parse(self.provider, system, user, parse)
-        except ModelOutputError as error:
-            if str(error) != "invalid role output" or not observations:
-                raise
-            recovered = _grounded_positive_evidence(
-                checkpoints, observations[-1], start_url
-            )
-            if recovered:
-                return recovered
-            raise
+        return retry_parse(self.provider, system, user, parse)
 
 
 def _validate_action(action: Action, checkpoint_ids: set[str]) -> None:

@@ -270,7 +270,7 @@ def test_verifier_grounds_current_presence_quotes_in_each_region() -> None:
     assert '"id": "o1"' not in provider.calls[0][1]
 
 
-def test_verifier_recovers_exact_current_scoped_presence_after_bad_model_json() -> None:
+def test_verifier_malformed_output_stays_unknown_even_with_visible_targets() -> None:
     provider = FakeProvider({"observation": {}}, {"action": {}})
     checkpoints = (
         Checkpoint("dashboard", "scenario", "Alpha visible in dashboard", True, "dashboard", "Alpha"),
@@ -281,28 +281,8 @@ def test_verifier_recovers_exact_current_scoped_presence_after_bad_model_json() 
         (ObservationRegion("main", "Alpha", "main"), ObservationRegion("aside", "Alpha", "aside")),
     )
 
-    evidence = Verifier(provider).verify(checkpoints, (observation,), scenario_url="http://localhost/")
-
-    assert [(item.checkpoint_id, item.observation_id, item.region_id, item.quote) for item in evidence] == [
-        ("dashboard", "o5", "main", "Alpha"),
-        ("sidebar", "o5", "aside", "Alpha"),
-    ]
-
-
-def test_verifier_recovery_rejects_detail_page_or_missing_region() -> None:
-    checkpoints = (
-        Checkpoint("dashboard", "scenario", "Alpha visible in dashboard", True, "dashboard", "Alpha"),
-        Checkpoint("sidebar", "scenario", "Alpha visible in sidebar", True, "sidebar", "Alpha"),
-    )
-    for url, regions in (
-        ("http://localhost/projects/1", (ObservationRegion("main", "Alpha", "main"), ObservationRegion("aside", "Alpha", "aside"))),
-        ("http://localhost/", (ObservationRegion("main", "Alpha", "main"),)),
-    ):
-        observation = Observation("o5", url, "Alpha", "shot.png", "current", regions)
-        with pytest.raises(ModelOutputError):
-            Verifier(FakeProvider({"wrong": {}}, {"wrong": {}})).verify(
-                checkpoints, (observation,), scenario_url="http://localhost/"
-            )
+    with pytest.raises(ModelOutputError):
+        Verifier(provider).verify(checkpoints, (observation,), scenario_url="http://localhost/")
 
 
 def test_verifier_rejects_body_only_sat_for_scoped_checkpoint() -> None:
