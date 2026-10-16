@@ -26,6 +26,23 @@ OBSERVATION_POLL_INTERVAL_MS = 50
 MAX_STEPS = 35
 
 
+def _regions_separate(
+    first: dict[str, float] | None, second: dict[str, float] | None
+) -> bool:
+    """Require proven nonoverlap before using two regions independently."""
+
+    if first is None or second is None:
+        return False
+    try:
+        ax, ay, aw, ah = (float(first[key]) for key in ("x", "y", "width", "height"))
+        bx, by, bw, bh = (float(second[key]) for key in ("x", "y", "width", "height"))
+    except (KeyError, TypeError, ValueError):
+        return False
+    if aw <= 0 or ah <= 0 or bw <= 0 or bh <= 0:
+        return False
+    return ax + aw <= bx or bx + bw <= ax or ay + ah <= by or by + bh <= ay
+
+
 class BudgetExhausted(RuntimeError):
     """Raised before a browser call when the per-run action budget is spent."""
 
@@ -160,12 +177,14 @@ class BrowserGateway:
         return text
 
     def _capture_regions(self) -> tuple[ObservationRegion, ...]:
-        """Capture standard semantic DOM regions without target-specific selectors.
+        """Capture separate semantic or spatial DOM regions.
 
         The body remains the legacy observation source.  Region captures are
         additive and are only used when a checkpoint explicitly asks for a
-        scoped assertion.  If a page exposes no semantic regions, callers must
-        conservatively leave that assertion UNKNOWN.
+        scoped assertion. Some SPAs omit landmark elements, so a bounded
+        fallback looks for visually separate sidebar and main containers with
+        common semantic class names. A page without separable regions still
+        leaves the scoped assertion UNKNOWN.
         """
 
         candidates = (
@@ -176,7 +195,12 @@ class BrowserGateway:
             ("evidence-region", "[data-evidence-region]"),
         )
         regions: list[ObservationRegion] = []
+        region_boxes: dict[str, dict[str, float] | None] = {}
         seen_text: set[str] = set()
+        sidebar_right_edges: list[float] = []
+        sidebar_geometry_unknown = False
+        main_left_edges: list[float] = []
+        main_geometry_unknown = False
         for region_id, selector in candidates:
             try:
                 locator = self.page.locator(selector)
@@ -193,8 +217,139 @@ class BrowserGateway:
                     continue
                 seen_text.add(text)
                 suffix = f"[{index}]" if count > 1 else ""
-                regions.append(ObservationRegion(f"{region_id}{suffix}", text, selector))
+                region = ObservationRegion(f"{region_id}{suffix}", text, selector)
+                regions.append(region)
+                try:
+                    box = target.bounding_box()
+                    region_boxes[region.id] = box if isinstance(box, dict) else None
+                except (AttributeError, PlaywrightError):
+                    region_boxes[region.id] = None
+                if region_id in {"aside", "role-complementary"}:
+                    try:
+                        box = region_boxes[region.id]
+                        if not isinstance(box, dict):
+                            raise ValueError("missing sidebar geometry")
+                        sidebar_right_edges.append(box["x"] + box["width"])
+                    except (AttributeError, KeyError, TypeError, ValueError, PlaywrightError):
+                        sidebar_geometry_unknown = True
+                if region_id in {"main", "role-main"}:
+                    try:
+                        box = region_boxes[region.id]
+                        if not isinstance(box, dict):
+                            raise ValueError("missing main geometry")
+                        main_left_edges.append(box["x"])
+                    except (AttributeError, KeyError, TypeError, ValueError, PlaywrightError):
+                        main_geometry_unknown = True
+        present = {region.id.split("[", 1)[0] for region in regions}
+        if not ({"aside", "role-complementary"} & present) and not main_geometry_unknown:
+            sidebar_candidate = self._capture_spatial_region(
+                "aside",
+                ('[class*="sidebar" i]', '[class*="sidenav" i]'),
+                right_neighbor_left=min(main_left_edges) if main_left_edges else None,
+            )
+            if sidebar_candidate is not None:
+                sidebar, sidebar_box = sidebar_candidate
+            else:
+                sidebar = None
+            if sidebar is not None and sidebar.text not in seen_text:
+                regions.append(sidebar)
+                region_boxes[sidebar.id] = sidebar_box
+                seen_text.add(sidebar.text)
+                sidebar_right_edges.append(sidebar_box["x"] + sidebar_box["width"])
+        if not ({"main", "role-main"} & present) and not sidebar_geometry_unknown:
+            main_candidate = self._capture_spatial_region(
+                "main",
+                (
+                    '[class*="dashboard" i]',
+                    '[class*="main" i]',
+                    '[class*="projects" i]',
+                ),
+                left_neighbor_right=max(sidebar_right_edges) if sidebar_right_edges else None,
+            )
+            if main_candidate is not None and main_candidate[0].text not in seen_text:
+                regions.append(main_candidate[0])
+                region_boxes[main_candidate[0].id] = main_candidate[1]
+        sidebar_regions = [
+            region for region in regions
+            if region.id.split("[", 1)[0] in {"aside", "role-complementary"}
+        ]
+        if sidebar_regions:
+            # Two scoped claims must come from distinct visible areas. A
+            # semantic main may contain an aside, even when both landmarks
+            # exist, so semantic labels alone cannot prove separation.
+            regions = [
+                region for region in regions
+                if region.id.split("[", 1)[0] not in {"main", "role-main"}
+                or all(
+                    _regions_separate(region_boxes.get(region.id), region_boxes.get(sidebar.id))
+                    for sidebar in sidebar_regions
+                )
+            ]
         return tuple(regions)
+
+    def _capture_spatial_region(
+        self,
+        region_id: str,
+        selectors: tuple[str, ...],
+        *,
+        left_neighbor_right: float | None = None,
+        right_neighbor_left: float | None = None,
+    ) -> tuple[ObservationRegion, dict[str, float]] | None:
+        viewport = getattr(self.page, "viewport_size", None)
+        if not isinstance(viewport, dict):
+            return None
+        width = viewport.get("width")
+        height = viewport.get("height")
+        if not isinstance(width, (int, float)) or not isinstance(height, (int, float)):
+            return None
+        if width <= 0 or height <= 0:
+            return None
+        best: tuple[int, float, ObservationRegion, dict[str, float]] | None = None
+        for selector in selectors:
+            try:
+                locator = self.page.locator(selector)
+                count = min(locator.count(), 80)
+            except Exception:
+                continue
+            for index in range(count):
+                try:
+                    target = locator.nth(index)
+                    box = target.bounding_box()
+                    if not isinstance(box, dict):
+                        continue
+                    x, box_width, box_height = box["x"], box["width"], box["height"]
+                    # A scoped dashboard assertion must not reuse pixels
+                    # covered by the selected sidebar assertion.
+                    if left_neighbor_right is not None and x < left_neighbor_right:
+                        continue
+                    if right_neighbor_left is not None and x + box_width > right_neighbor_left:
+                        continue
+                    if region_id == "aside":
+                        separated = (
+                            x <= width * 0.15
+                            and width * 0.08 <= box_width <= width * 0.45
+                            and box_height >= height * 0.25
+                        )
+                    else:
+                        separated = (
+                            x >= width * 0.12
+                            and box_width >= width * 0.40
+                            and box_height >= height * 0.10
+                        )
+                    if not separated:
+                        continue
+                    region_text = target.inner_text()[:20_000]
+                    if not isinstance(region_text, str) or not region_text.strip():
+                        continue
+                except Exception:
+                    continue
+                region = ObservationRegion(
+                    region_id, region_text, f"{selector} >> nth={index}"
+                )
+                rank = (len(region_text), box_width * box_height)
+                if best is None or rank > best[:2]:
+                    best = (rank[0], rank[1], region, box)
+        return (best[2], best[3]) if best is not None else None
 
     def _dispatch(self, action: Action) -> None:
         if action.kind == "goto":

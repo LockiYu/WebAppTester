@@ -148,6 +148,50 @@ def test_pass_allows_optional_unknown_checkpoint(tmp_path: Path) -> None:
     assert {item["status"] for item in run.evidence} == {"SAT", "UNKNOWN"}
 
 
+def test_optional_scoped_evidence_may_share_required_region(tmp_path: Path) -> None:
+    report = _report(status="PASS")
+    report["checkpoints"] = [
+        {
+            "id": "required",
+            "source": "visible on dashboard",
+            "expected": "Course Test",
+            "required": True,
+            "scope": "dashboard",
+        },
+        {
+            "id": "optional",
+            "source": "additional dashboard state",
+            "expected": "additional state",
+            "required": False,
+            "scope": "dashboard",
+        },
+    ]
+    report["observations"][0]["text"] = "Course Test"
+    report["observations"][0]["regions"] = [
+        {"id": "main", "text": "Course Test", "locator": "main"}
+    ]
+    report["verdict"]["evidence"] = [
+        {
+            "checkpoint_id": "required",
+            "observation_id": "o1",
+            "quote": "Course Test",
+            "status": "SAT",
+            "region_id": "main",
+        },
+        {
+            "checkpoint_id": "optional",
+            "observation_id": "o1",
+            "quote": "Course Test",
+            "status": "UNKNOWN",
+            "region_id": "main",
+        },
+    ]
+
+    run = load_run(tmp_path, _write_report(tmp_path / "run", report))
+
+    assert run.status == "PASS"
+
+
 def test_persisted_scoped_evidence_must_match_region_scope(tmp_path: Path) -> None:
     report = _report(status="PASS")
     report["checkpoints"] = [

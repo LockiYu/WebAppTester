@@ -9,12 +9,14 @@ to the caller; the controller only uses the supplied gateway.
 from __future__ import annotations
 
 import inspect
+import re
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
 from .browser import BudgetExhausted
+from .providers import ModelOutputError
 from .schema import (
     Action,
     Checkpoint,
@@ -23,6 +25,7 @@ from .schema import (
     Scenario,
     Verdict,
     checkpoint_target_supported,
+    normalized_url,
     scope_matches_region,
 )
 
@@ -56,6 +59,8 @@ def verdict_from_evidence(
     checkpoints: Iterable[Checkpoint],
     evidence: Iterable[Evidence],
     observations: Iterable[Observation],
+    *,
+    scenario_url: str = "",
 ) -> Verdict:
     """Return a verdict only when evidence is directly grounded in observations.
 
@@ -68,6 +73,9 @@ def verdict_from_evidence(
     checkpoint_values = tuple(checkpoints)
     evidence_values = tuple(evidence)
     observation_values = tuple(observations)
+    start_url = scenario_url.strip() if isinstance(scenario_url, str) else ""
+    if not start_url and observation_values:
+        start_url = observation_values[0].url
 
     observation_by_id: dict[str, Observation] = {}
     duplicate_observations: set[str] = set()
@@ -127,6 +135,16 @@ def verdict_from_evidence(
                     evidence=evidence_values,
                     reason=f"required checkpoint {checkpoint_id} lacks region-grounded evidence",
                 )
+            if (
+                status == "SAT"
+                and _is_positive_presence(checkpoint)
+                and normalized_url(observation.url) != normalized_url(start_url)
+            ):
+                return Verdict(
+                    status="UNKNOWN",
+                    evidence=evidence_values,
+                    reason=f"required checkpoint {checkpoint_id} is not grounded in the scenario start page",
+                )
         if status == "SAT" and not checkpoint_target_supported(
             checkpoint.target, checkpoint.expected, quote
         ):
@@ -174,6 +192,16 @@ def verdict_from_evidence(
                     evidence=evidence_values,
                     reason=f"required checkpoint {checkpoint.id} lacks region-grounded evidence",
                 )
+            if (
+                status == "SAT"
+                and _is_positive_presence(checkpoint)
+                and normalized_url(observation.url) != normalized_url(start_url)
+            ):
+                return Verdict(
+                    status="UNKNOWN",
+                    evidence=evidence_values,
+                    reason=f"required checkpoint {checkpoint.id} is not grounded in the scenario start page",
+                )
         if status == "SAT" and not checkpoint_target_supported(
             checkpoint.target, checkpoint.expected, quote
         ):
@@ -198,6 +226,22 @@ def verdict_from_evidence(
                 reason="required scoped checkpoints cite the same observation region",
             )
         scoped_regions.add(key)
+
+    # Presence assertions describe the current UI state.  Once a newer
+    # observation exists, retaining an older presence claim can combine two
+    # different states into a false PASS.  Require every positive presence
+    # claim to cite the newest captured observation.
+    if observation_values:
+        newest_id = observation_values[-1].id
+        for checkpoint in required:
+            if _is_positive_presence(checkpoint):
+                item = supported[checkpoint.id]
+                if item.observation_id != newest_id:
+                    return Verdict(
+                        status="UNKNOWN",
+                        evidence=evidence_values,
+                        reason="presence evidence is stale relative to the newest observation",
+                    )
 
     if any(item.status == "UNKNOWN" for item in supported.values()):
         return Verdict(
@@ -231,6 +275,19 @@ def _scoped_region(
         if scope_matches_region(scope, region.id, region.locator):
             return region
     return None
+
+
+def _is_positive_presence(checkpoint: Checkpoint) -> bool:
+    """Whether a checkpoint asserts that a named target is currently present."""
+
+    target = getattr(checkpoint, "target", "")
+    expected = getattr(checkpoint, "expected", "")
+    if not target or target.casefold() not in expected.casefold():
+        return False
+    lowered = expected.casefold()
+    return bool(
+        re.search(r"\b(?:visible|appears?|shown|exists?|listed|present)\b", lowered)
+    ) and not bool(re.search(r"\b(?:not|absent|missing|hidden|removed)\b", lowered))
 
 
 class Controller:
@@ -342,9 +399,16 @@ class Controller:
                 failure_hint = ""
                 initial = self.browser.observe(self.store)
                 observations.append(initial)
-                new_evidence, gap_request = self._verify(checkpoints, tuple(observations))
+                new_evidence, gap_request = self._verify(
+                    checkpoints, tuple(observations), scenario.url
+                )
                 self._merge_evidence(evidence, new_evidence)
-                current_verdict = verdict_from_evidence(checkpoints, evidence, observations)
+                current_verdict = verdict_from_evidence(
+                    checkpoints,
+                    evidence,
+                    observations,
+                    scenario_url=scenario.url,
+                )
 
                 if current_verdict.status in {"PASS", "FAIL"}:
                     return self._finish(
@@ -421,8 +485,32 @@ class Controller:
         self,
         checkpoints: tuple[Checkpoint, ...],
         observations: tuple[Observation, ...],
+        scenario_url: str = "",
     ) -> tuple[tuple[Evidence, ...], GapRequest | None]:
-        result = self.verifier.verify(checkpoints, observations)
+        try:
+            method = self.verifier.verify
+            try:
+                parameters = inspect.signature(method).parameters
+            except (TypeError, ValueError):
+                parameters = {}
+            accepts_scenario_url = "scenario_url" in parameters or any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
+            )
+            if accepts_scenario_url:
+                result = method(checkpoints, observations, scenario_url=scenario_url)
+            else:
+                result = method(checkpoints, observations)
+        except ModelOutputError as error:
+            if str(error) != "invalid role output":
+                raise
+            # Malformed verification at an intermediate page state is not
+            # evidence of an application failure. Record it without accepting
+            # any claim, then let execution seek the missing observations.
+            self.store.append_event(
+                {"type": "verifier_output_rejected", "error_class": "ModelOutputError"}
+            )
+            return (), None
         gap: GapRequest | None = None
         values: object = result
         if isinstance(result, dict):

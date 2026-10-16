@@ -3,6 +3,7 @@
 import re
 from dataclasses import dataclass
 from typing import Final
+from urllib.parse import urlsplit, urlunsplit
 
 
 ACTION_KINDS: Final[frozenset[str]] = frozenset(
@@ -63,6 +64,49 @@ def canonical_scope(value: str) -> str:
 
     normalized = value.strip().casefold()
     return _SCOPE_ALIASES.get(normalized, normalized)
+
+
+def normalized_url(value: str) -> str:
+    """Return a stable page URL key for evidence provenance checks.
+
+    Fragments do not identify a different document.  Host and scheme casing,
+    default ports, and a trailing path slash are also presentation details;
+    query strings remain significant because they can select application state.
+    Malformed URLs are kept as a case-folded string so validation remains
+    deterministic without turning a report into a URL parser error.
+    """
+
+    raw = value.strip()
+    try:
+        parsed = urlsplit(raw)
+        if not parsed.scheme or not parsed.netloc:
+            return raw.casefold()
+        hostname = parsed.hostname
+        if not hostname:
+            return raw.casefold()
+        host = hostname.casefold()
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        port = parsed.port
+        if port is not None and not (
+            (parsed.scheme.casefold() == "http" and port == 80)
+            or (parsed.scheme.casefold() == "https" and port == 443)
+        ):
+            host = f"{host}:{port}"
+        path = parsed.path or "/"
+        if path != "/":
+            path = path.rstrip("/") or "/"
+        return urlunsplit(
+            (parsed.scheme.casefold(), host, path, parsed.query, "")
+        )
+    except (TypeError, ValueError):
+        return raw.casefold()
+
+
+def same_page_url(left: str, right: str) -> bool:
+    """Return whether two URLs identify the same normalized application page."""
+
+    return normalized_url(left) == normalized_url(right)
 
 
 def expected_targets_supported(expected: str, quote: str) -> bool:

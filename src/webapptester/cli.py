@@ -74,15 +74,21 @@ def _unknown_report(
 
 
 def _launch_chromium(chromium: Any) -> Any:
-    """Prefer Playwright's managed Chromium, with installed Chrome fallback."""
+    """Prefer Playwright's managed full Chromium, with installed Chrome fallback."""
 
     try:
-        return chromium.launch(headless=True)
+        # The managed full browser uses Chrome's current headless mode. It is
+        # kept separate from the user's installed Chrome channel, whose
+        # lifetime may be constrained by the host app environment.
+        return chromium.launch(channel="chromium", headless=True)
     except PlaywrightError as bundled_error:
         try:
-            return chromium.launch(channel="chrome", headless=True)
+            return chromium.launch(headless=True)
         except PlaywrightError:
-            raise bundled_error
+            try:
+                return chromium.launch(channel="chrome", headless=True)
+            except PlaywrightError:
+                raise bundled_error
 
 
 def _validated_storage_state(value: object) -> Path | None:

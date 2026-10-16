@@ -28,11 +28,22 @@ def _free_port() -> int:
 
 
 def _launch_browser(playwright: Playwright):
-    try:
-        return playwright.chromium.launch(headless=True)
-    except Exception:
-        # CI may have installed Google Chrome but not Playwright's bundle.
-        return playwright.chromium.launch(channel="chrome", headless=True)
+    return cli._launch_chromium(playwright.chromium)
+
+
+def test_cli_prefers_managed_full_chromium() -> None:
+    class Chromium:
+        def __init__(self):
+            self.calls = []
+
+        def launch(self, **kwargs):
+            self.calls.append(kwargs)
+            return "managed-browser"
+
+    chromium = Chromium()
+
+    assert cli._launch_chromium(chromium) == "managed-browser"
+    assert chromium.calls == [{"channel": "chromium", "headless": True}]
 
 
 class _ScriptedPlanner:

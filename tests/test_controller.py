@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 
 from webapptester.controller import Controller, verdict_from_evidence
+from webapptester.providers import ModelOutputError
 from webapptester.schema import (
     Action,
     Checkpoint,
@@ -136,6 +137,52 @@ def test_both_scoped_locations_can_pass() -> None:
     )
 
     assert verdict_from_evidence(checkpoints, evidence, (observation,)).status == "PASS"
+
+
+def test_detail_page_cannot_satisfy_dashboard_and_sidebar_presence() -> None:
+    observation = _scoped_observation()
+    detail = Observation(
+        observation.id,
+        "https://example.test/projects/1",
+        observation.text,
+        observation.screenshot,
+        observation.fingerprint,
+        observation.regions,
+    )
+    checkpoints = (
+        Checkpoint("dashboard", "scenario", "Course Test visible in dashboard", True, "dashboard", "Course Test"),
+        Checkpoint("sidebar", "scenario", "Course Test visible in sidebar", True, "sidebar", "Course Test"),
+    )
+    evidence = (
+        Evidence("dashboard", detail.id, "Course Test", "SAT", "dashboard"),
+        Evidence("sidebar", detail.id, "Course Test", "SAT", "sidebar"),
+    )
+
+    verdict = verdict_from_evidence(
+        checkpoints, evidence, (detail,), scenario_url="https://example.test/"
+    )
+    assert verdict.status == "UNKNOWN"
+
+
+def test_old_scoped_presence_cannot_combine_with_new_observation() -> None:
+    first = _scoped_observation()
+    second = Observation(
+        "o-later", "https://example.test", "Sidebar project: Course Test", "later.png", "later",
+        (ObservationRegion("sidebar", "Sidebar project: Course Test", "aside"),),
+    )
+    checkpoints = (
+        Checkpoint("dashboard", "scenario", "Course Test visible in dashboard", True, "dashboard", "Course Test"),
+        Checkpoint("sidebar", "scenario", "Course Test visible in sidebar", True, "sidebar", "Course Test"),
+    )
+    evidence = (
+        Evidence("dashboard", first.id, "Course Test", "SAT", "dashboard"),
+        Evidence("sidebar", second.id, "Course Test", "SAT", "sidebar"),
+    )
+
+    verdict = verdict_from_evidence(
+        checkpoints, evidence, (first, second), scenario_url="https://example.test"
+    )
+    assert verdict.status == "UNKNOWN"
 
 
 def test_scoped_evidence_must_match_checkpoint_region_scope() -> None:
@@ -301,6 +348,13 @@ class _GroundedVerifier:
         if current.text == "completed":
             return (_evidence(observation_id=current.id, quote="completed"),)
         return ()
+
+
+class _MalformedThenGroundedVerifier(_GroundedVerifier):
+    def verify(self, checkpoints, observations):
+        if len(observations) == 2:
+            raise ModelOutputError("invalid role output") from ValueError("ungrounded claim")
+        return super().verify(checkpoints, observations)
 
 
 class _AliasedExecutor:
@@ -482,6 +536,27 @@ def test_ambiguous_locator_recovers_with_fresh_snapshot_and_grounded_pass() -> N
     assert store.events[1]["success"] is True
     report_text = json.dumps(store.report)
     assert "secret-value" not in report_text
+
+
+def test_malformed_intermediate_verification_does_not_stop_execution() -> None:
+    store = _FakeStore()
+    browser = _RecoveryBrowser(
+        [{"success": True, "error": ""}, {"success": True, "error": ""}]
+    )
+    verifier = _MalformedThenGroundedVerifier()
+
+    verdict = Controller(
+        _FakePlanner((_checkpoint(),)),
+        _SnapshotExecutor([Action("click", "#open"), Action("click", "#finish")]),
+        verifier,
+        browser,
+        store,
+    ).run(_scenario())
+
+    assert verdict.status == "PASS"
+    assert browser.steps == 2
+    assert any(event["type"] == "verifier_output_rejected" for event in store.events)
+    assert store.report["verdict"]["evidence"][0]["observation_id"] == "o3"
 
 
 def test_repeated_ambiguous_locator_stops_after_two_retries_without_verification() -> None:

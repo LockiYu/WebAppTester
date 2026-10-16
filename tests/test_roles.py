@@ -237,6 +237,74 @@ def test_verifier_accepts_only_quotes_from_observations() -> None:
     assert evidence[0].status == "SAT"
 
 
+def test_verifier_grounds_current_presence_quotes_in_each_region() -> None:
+    provider = FakeProvider(
+        {
+            "evidence": [
+                {
+                    "checkpoint_id": "dashboard", "observation_id": "o2",
+                    "quote": "Alpha is visible", "status": "SAT", "region_id": "main",
+                },
+                {
+                    "checkpoint_id": "sidebar", "observation_id": "o2",
+                    "quote": "Alpha is visible", "status": "SAT", "region_id": "aside",
+                },
+            ]
+        }
+    )
+    checkpoints = (
+        Checkpoint("dashboard", "verify dashboard", "Alpha is visible in dashboard", True, "main", "Alpha"),
+        Checkpoint("sidebar", "verify sidebar", "Alpha is visible in sidebar", True, "aside", "Alpha"),
+    )
+    old = Observation("o1", "http://localhost", "Other", "shot.png", "old")
+    current = Observation(
+        "o2", "http://localhost", "Alpha", "shot.png", "current",
+        (ObservationRegion("main", "Alpha", "main"), ObservationRegion("aside", "Alpha", "aside")),
+    )
+
+    evidence = Verifier(provider).verify(checkpoints, (old, current))
+
+    assert [(item.checkpoint_id, item.quote, item.region_id) for item in evidence] == [
+        ("dashboard", "Alpha", "main"), ("sidebar", "Alpha", "aside")
+    ]
+    assert '"id": "o1"' not in provider.calls[0][1]
+
+
+def test_verifier_recovers_exact_current_scoped_presence_after_bad_model_json() -> None:
+    provider = FakeProvider({"observation": {}}, {"action": {}})
+    checkpoints = (
+        Checkpoint("dashboard", "scenario", "Alpha visible in dashboard", True, "dashboard", "Alpha"),
+        Checkpoint("sidebar", "scenario", "Alpha visible in sidebar", True, "sidebar", "Alpha"),
+    )
+    observation = Observation(
+        "o5", "http://localhost/", "Alpha", "shot.png", "current",
+        (ObservationRegion("main", "Alpha", "main"), ObservationRegion("aside", "Alpha", "aside")),
+    )
+
+    evidence = Verifier(provider).verify(checkpoints, (observation,), scenario_url="http://localhost/")
+
+    assert [(item.checkpoint_id, item.observation_id, item.region_id, item.quote) for item in evidence] == [
+        ("dashboard", "o5", "main", "Alpha"),
+        ("sidebar", "o5", "aside", "Alpha"),
+    ]
+
+
+def test_verifier_recovery_rejects_detail_page_or_missing_region() -> None:
+    checkpoints = (
+        Checkpoint("dashboard", "scenario", "Alpha visible in dashboard", True, "dashboard", "Alpha"),
+        Checkpoint("sidebar", "scenario", "Alpha visible in sidebar", True, "sidebar", "Alpha"),
+    )
+    for url, regions in (
+        ("http://localhost/projects/1", (ObservationRegion("main", "Alpha", "main"), ObservationRegion("aside", "Alpha", "aside"))),
+        ("http://localhost/", (ObservationRegion("main", "Alpha", "main"),)),
+    ):
+        observation = Observation("o5", url, "Alpha", "shot.png", "current", regions)
+        with pytest.raises(ModelOutputError):
+            Verifier(FakeProvider({"wrong": {}}, {"wrong": {}})).verify(
+                checkpoints, (observation,), scenario_url="http://localhost/"
+            )
+
+
 def test_verifier_rejects_body_only_sat_for_scoped_checkpoint() -> None:
     provider = FakeProvider(
         {
@@ -268,6 +336,28 @@ def test_verifier_rejects_body_only_sat_for_scoped_checkpoint() -> None:
         "shot.png",
         "fingerprint",
         (ObservationRegion("main", "Project Alpha exists", "main"),),
+    )
+
+    with pytest.raises(ModelOutputError):
+        Verifier(provider).verify((checkpoint,), (observation,))
+
+
+def test_verifier_cannot_repair_a_wrong_presence_region() -> None:
+    raw = {
+        "evidence": [
+            {
+                "checkpoint_id": "dashboard", "observation_id": "o1",
+                "quote": "Alpha is visible", "status": "SAT", "region_id": "aside",
+            }
+        ]
+    }
+    provider = FakeProvider(raw, raw)
+    checkpoint = Checkpoint(
+        "dashboard", "verify dashboard", "Alpha is visible in dashboard", True, "main", "Alpha"
+    )
+    observation = Observation(
+        "o1", "http://localhost", "Alpha", "shot.png", "fp",
+        (ObservationRegion("main", "Other", "main"), ObservationRegion("aside", "Alpha", "aside")),
     )
 
     with pytest.raises(ModelOutputError):
@@ -370,10 +460,291 @@ def test_executor_prompt_includes_snapshot_hint_and_ref_guidance() -> None:
     assert action.locator == "ref=e2"
     system, prompt = provider.calls[0]
     assert '"accessibility_snapshot": "- button \\"Add Project\\" [ref=e1]\\n- button \\"Add Project\\" [ref=e2]"' in prompt
+    assert '"ambiguous_controls": [{"locators": ["ref=e1", "ref=e2"], "name": "Add Project", "role": "button"}]' in prompt
     assert '"failure_hint": "ambiguous_locator"' in prompt
     assert "ref=eN" in system
     assert "current accessibility snapshot" in system
     assert "more than one element" in system
+
+
+def test_executor_retries_repeated_ambiguous_locator_with_current_ref() -> None:
+    provider = FakeProvider(
+        {"action": {"kind": "click", "locator": "role=button;name=Add Project"}},
+        {"action": {"kind": "click", "locator": "ref=e2"}},
+    )
+    action = Executor(provider).next_action(
+        _scenario(),
+        (),
+        _observation("Two Add Project buttons are visible"),
+        (Action("click", "role=button;name=Add Project"),),
+        accessibility_snapshot='- button "Add Project" [ref=e1]\n- button "Add Project" [ref=e2]',
+        failure_hint="ambiguous_locator",
+    )
+    assert action.locator == "ref=e2"
+    assert len(provider.calls) == 2
+    assert "role locator matches multiple current controls" in provider.calls[1][1]
+    assert '"allowed_next_locators": ["ref=e1", "ref=e2"]' in provider.calls[0][1]
+    assert "ref=e1" in provider.calls[1][1]
+
+
+def test_executor_rejects_duplicate_role_before_browser_action() -> None:
+    provider = FakeProvider(
+        {"action": {"kind": "click", "locator": "role=button;name=Add Project"}},
+        {"action": {"kind": "click", "locator": "ref=e2"}},
+    )
+
+    action = Executor(provider).next_action(
+        _scenario(),
+        (),
+        _observation("Two Add Project buttons are visible"),
+        (),
+        accessibility_snapshot='- button "Add Project" [ref=e1]\n- button "Add Project" [ref=e2]',
+    )
+
+    assert action.locator == "ref=e2"
+    assert "role locator matches multiple current controls" in provider.calls[1][1]
+
+
+def test_executor_can_choose_grounded_ref_on_third_ambiguous_attempt() -> None:
+    provider = FakeProvider(
+        {"action": {"kind": "click", "locator": "role=button;name=Add Project"}},
+        {"action": {"kind": "click", "locator": "role=button;name=Add Project"}},
+        {"action": {"kind": "click", "locator": "ref=e2"}},
+    )
+
+    action = Executor(provider).next_action(
+        _scenario(),
+        (),
+        _observation("Two Add Project buttons are visible"),
+        (),
+        accessibility_snapshot='- button "Add Project" [ref=e1]\n- button "Add Project" [ref=e2]',
+    )
+
+    assert action.locator == "ref=e2"
+    assert len(provider.calls) == 3
+
+
+def test_executor_ignores_echoed_inputs_and_invalid_optional_checkpoint_label() -> None:
+    provider = FakeProvider(
+        {
+            "action": {"kind": "click", "locator": "ref=e2", "checkpoint_id": "o"},
+            "ambiguous_controls": [],
+            "checkpoints": [],
+            "failure_hint": "",
+        }
+    )
+
+    action = Executor(provider).next_action(
+        _scenario(),
+        (),
+        _observation("Two Add Project buttons are visible"),
+        (),
+        accessibility_snapshot='- button "Add Project" [ref=e1]\n- button "Add Project" [ref=e2]',
+    )
+
+    assert action == Action("click", "ref=e2")
+
+
+def test_executor_still_rejects_unknown_top_level_fields() -> None:
+    provider = FakeProvider(
+        {"action": {"kind": "click", "locator": "ref=e2"}, "script": "ignored"},
+        {"action": {"kind": "click", "locator": "ref=e2"}, "script": "ignored"},
+    )
+
+    with pytest.raises(ModelOutputError):
+        Executor(provider).next_action(_scenario(), (), _observation(), ())
+
+
+def test_executor_fills_single_active_form_field_after_repeated_bad_clicks() -> None:
+    scenario = Scenario(
+        "Create project Alpha and verify it appears in dashboard and sidebar",
+        "http://localhost",
+    )
+    checkpoints = (
+        Checkpoint("dashboard", scenario.text, "Alpha visible", True, "dashboard", "Alpha"),
+    )
+    provider = FakeProvider(
+        {"action": {"kind": "click", "locator": "ref=e2"}},
+        {"action": {"kind": "click", "locator": "ref=e2"}},
+        {"action": {"kind": "click", "locator": "ref=e2"}},
+    )
+
+    action = Executor(provider).next_action(
+        scenario,
+        checkpoints,
+        _observation("Add Project dialog is open"),
+        (Action("click", "ref=e2"),),
+        accessibility_snapshot='- dialog [ref=e1]:\n  - textbox "Project name" [active] [ref=e3]\n  - button "Add Project" [ref=e2]',
+    )
+
+    assert action == Action("fill", "ref=e3", "Alpha")
+    assert '"pending_form_input": {"locator": "ref=e3", "value": "Alpha"}' in provider.calls[0][1]
+
+
+def test_executor_uses_unique_dialog_submit_after_filling_target() -> None:
+    scenario = Scenario("Create project Alpha and verify it appears", "http://localhost")
+    checkpoints = (Checkpoint("c1", scenario.text, "Alpha visible", True, "main", "Alpha"),)
+    provider = FakeProvider(
+        {"action": {"kind": "click", "locator": "ref=e1"}},
+        {"action": {"kind": "click", "locator": "ref=e1"}},
+        {"action": {"kind": "click", "locator": "ref=e1"}},
+    )
+    snapshot = '\n'.join(
+        [
+            '- button "Add Project" [ref=e1]',
+            '- dialog [ref=e2]:',
+            '  - textbox "Project name" [ref=e3]: <redacted>',
+            '  - button "Add Project" [ref=e4]',
+            '  - button "Cancel" [ref=e5]',
+            '- button "Add Project" [ref=e6]',
+        ]
+    )
+
+    action = Executor(provider).next_action(
+        scenario,
+        checkpoints,
+        _observation("Dialog is open"),
+        (Action("fill", "ref=e3", "Alpha"),),
+        accessibility_snapshot=snapshot,
+    )
+
+    assert action == Action("click", "ref=e4")
+    assert '"pending_form_submit": {"locator": "ref=e4"}' in provider.calls[0][1]
+
+
+def test_executor_does_not_fill_active_filter_outside_dialog() -> None:
+    scenario = Scenario("Create project Alpha and verify dashboard", "http://localhost")
+    checkpoints = (Checkpoint("dashboard", scenario.text, "Alpha visible", True, "dashboard", "Alpha"),)
+    provider = FakeProvider({"action": {"kind": "click", "locator": "ref=e2"}})
+
+    action = Executor(provider).next_action(
+        scenario,
+        checkpoints,
+        _observation("Filter projects"),
+        (Action("click", "ref=e1"),),
+        accessibility_snapshot='- textbox "Filter projects" [active] [ref=e3]\n- button "Add Project" [ref=e2]',
+    )
+
+    assert action == Action("click", "ref=e2")
+    assert '"pending_form_input"' not in provider.calls[0][1]
+
+
+def test_executor_returns_to_start_for_two_scoped_checks_after_submit() -> None:
+    scenario = Scenario(
+        "Create project Alpha and verify it appears on dashboard and sidebar",
+        "http://localhost/",
+    )
+    checkpoints = (
+        Checkpoint("dashboard", scenario.text, "Alpha visible", True, "dashboard", "Alpha"),
+        Checkpoint("sidebar", scenario.text, "Alpha visible", True, "sidebar", "Alpha"),
+    )
+    observation = Observation(
+        "o2", "http://localhost/projects/1", "Alpha", "shot.png", "fp",
+        (ObservationRegion("aside", "Alpha", "aside"),),
+    )
+    provider = FakeProvider()
+
+    action = Executor(provider).next_action(
+        scenario,
+        checkpoints,
+        observation,
+        (
+            Action("fill", "ref=e3", "Alpha"),
+            Action("click", '[role="dialog"] button[type="submit"]'),
+        ),
+    )
+
+    assert action == Action("goto", value=scenario.url)
+    assert provider.calls == []
+
+
+def test_executor_returns_from_detail_even_when_both_regions_contain_target() -> None:
+    scenario = Scenario("Create project Alpha and verify dashboard and sidebar", "http://localhost/")
+    checkpoints = (
+        Checkpoint("dashboard", scenario.text, "Alpha visible", True, "dashboard", "Alpha"),
+        Checkpoint("sidebar", scenario.text, "Alpha visible", True, "sidebar", "Alpha"),
+    )
+    observation = Observation(
+        "o2", "http://localhost/projects/1", "Alpha", "shot.png", "fp",
+        (ObservationRegion("main", "Alpha", "main"), ObservationRegion("aside", "Alpha", "aside")),
+    )
+    provider = FakeProvider()
+
+    action = Executor(provider).next_action(
+        scenario, checkpoints, observation,
+        (Action("fill", "ref=e3", "Alpha"), Action("click", "ref=e4")),
+    )
+
+    assert action == Action("goto", value=scenario.url)
+    assert provider.calls == []
+
+
+def test_executor_does_not_infer_form_value_without_exact_scenario_target() -> None:
+    provider = FakeProvider(
+        {"action": {"kind": "click", "locator": "ref=e2"}},
+    )
+
+    action = Executor(provider).next_action(
+        _scenario(),
+        (),
+        _observation("Add Project dialog is open"),
+        (Action("click", "ref=e2"),),
+        accessibility_snapshot='- textbox "Project name" [active] [ref=e3]',
+    )
+
+    assert action == Action("click", "ref=e2")
+
+
+def test_executor_rejects_new_ungrounded_locator_after_ambiguous_click() -> None:
+    provider = FakeProvider(
+        {"action": {"kind": "click", "locator": "button:nth-child(2)"}},
+        {"action": {"kind": "click", "locator": "ref=e2"}},
+    )
+
+    action = Executor(provider).next_action(
+        _scenario(),
+        (),
+        _observation("Two Add Project buttons are visible"),
+        (Action("click", "role=button;name=Add Project"),),
+        accessibility_snapshot='- button "Add Project" [ref=e1]\n- button "Add Project" [ref=e2]',
+        failure_hint="ambiguous_locator",
+    )
+
+    assert action.locator == "ref=e2"
+    assert "ambiguous action requires" in provider.calls[1][1]
+
+
+def test_executor_matches_snapshot_refs_case_insensitively_after_ambiguity() -> None:
+    provider = FakeProvider({"action": {"kind": "click", "locator": "ref=e2"}})
+
+    action = Executor(provider).next_action(
+        _scenario(),
+        (),
+        _observation("Two Add Project buttons are visible"),
+        (Action("click", "role=button;name=add  project"),),
+        accessibility_snapshot='- button "Add Project" [ref=e1]\n- button "Add Project details" [ref=e2]',
+        failure_hint="ambiguous_locator",
+    )
+
+    assert action.locator == "ref=e2"
+    assert '"allowed_next_locators": ["ref=e1", "ref=e2"]' in provider.calls[0][1]
+
+
+def test_executor_rejects_ambiguous_locator_repeated_twice() -> None:
+    provider = FakeProvider(
+        {"action": {"kind": "click", "locator": "role=button;name=Add Project"}},
+        {"action": {"kind": "click", "locator": "role=button;name=Add Project"}},
+        {"action": {"kind": "click", "locator": "role=button;name=Add Project"}},
+    )
+    with pytest.raises(ModelOutputError):
+        Executor(provider).next_action(
+            _scenario(),
+            (),
+            _observation("Two Add Project buttons are visible"),
+            (Action("click", "role=button;name=Add Project"),),
+            accessibility_snapshot='- button "Add Project" [ref=e1]\n- button "Add Project" [ref=e2]',
+            failure_hint="ambiguous_locator",
+        )
 
 
 def test_executor_redacts_prior_values_from_observation_and_snapshot() -> None:

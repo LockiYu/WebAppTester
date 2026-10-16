@@ -25,8 +25,9 @@ ollama pull qwen2.5:3b
 The CLI creates a unique UTC timestamped child under the supplied output base
 (`runs/demo/<timestamp>/`) and writes `report.json`, append-only `events.jsonl`,
 PNG observations under `screenshots/`, and `trace.zip`. It exits 0 for PASS, 1 for
-FAIL, and 2 for UNKNOWN. If the managed Playwright browser is unavailable,
-the runner falls back to an installed Google Chrome channel.
+FAIL, and 2 for UNKNOWN. The runner tries managed full Chromium, the managed
+default browser, then an installed Google Chrome channel. Install the managed
+browser before running the local acceptance test.
 
 To run two scenarios sequentially and export one summary, use the included
 batch configuration:
@@ -43,9 +44,12 @@ when every item passes, 1 when at least one item fails, and 2 when no item
 fails but at least one item is unknown.
 
 DeepSeek is selectable with `--provider deepseek`; it uses
-`deepseek-flash` by default, disables thinking for structured JSON requests,
+`deepseek-flash` by default (the current API name for DeepSeek-V4.1-Flash),
+disables thinking for structured JSON requests,
 caps each completion at 4096 tokens, and requires `DEEPSEEK_API_KEY` in the
 environment. No DeepSeek request is made without that key.
+See the [DeepSeek model and pricing documentation](https://api-docs.deepseek.com/quick_start/pricing/)
+before any paid evaluation; the repository does not contain an API key.
 
 To inspect the newest trace locally during development:
 
@@ -137,6 +141,14 @@ It writes a report, PNG observations under
 actions and asserts the new project independently in the dashboard list and
 sidebar.
 
+A local Ollama end-to-end acceptance run on 2026-10-16 also created a fresh
+project from the natural-language scenario and returned `PASS` in five browser
+actions. Its two SAT checkpoint items cite the same final observation but
+different nonoverlapping dashboard and sidebar regions on the start page. The
+ignored local report is under
+`runs/4gaboards-local/runtime-acceptance-after-audit/20261016T102519799424Z/`.
+This is one demonstrated scenario, not a score for the course's full suite.
+
 To run the supplied model scenario once after the deterministic check, keep
 the private storage state local and inspect the persisted report path:
 
@@ -152,7 +164,10 @@ PYTHONPATH=src .venv/bin/webapptester \
 Keep the model's PASS, FAIL, or UNKNOWN result as reported. A model planning
 or provider failure is an UNKNOWN execution result and does not establish a
 4gaBoards failure. Do not repeat `Course Test` creation against the same
-fixture.
+fixture. The current local fixture already contains `Course Test` from a
+diagnostic run whose report stayed `UNKNOWN` after malformed Ollama verifier
+output. Use a fresh isolated fixture before rerunning that exact creation
+scenario; the successful unique-name acceptance above has its own PASS report.
 
 Run the tests with:
 

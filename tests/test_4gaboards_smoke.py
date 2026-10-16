@@ -11,6 +11,7 @@ import pytest
 from playwright.sync_api import Playwright, sync_playwright
 
 from webapptester.browser import BrowserGateway
+from webapptester.cli import _launch_chromium
 from webapptester.schema import Action
 from webapptester.store import RunStore
 
@@ -22,11 +23,7 @@ STORAGE_STATE = Path("runs/4gaboards-local/auth.json")
 
 
 def _launch_browser(playwright: Playwright):
-    try:
-        return playwright.chromium.launch(headless=True)
-    except Exception:
-        # The CI image may provide Google Chrome without Playwright's bundle.
-        return playwright.chromium.launch(channel="chrome", headless=True)
+    return _launch_chromium(playwright.chromium)
 
 
 def _act(gateway: BrowserGateway, store: RunStore, action: Action) -> None:

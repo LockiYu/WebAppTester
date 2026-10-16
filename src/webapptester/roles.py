@@ -27,6 +27,7 @@ from .schema import (
     parse_action,
     parse_checkpoints,
     parse_evidence,
+    same_page_url,
     scope_matches_region,
 )
 
@@ -67,14 +68,16 @@ def retry_parse(
     system: str,
     user: str,
     parse: Callable[[dict[str, object]], T],
+    *,
+    attempts: int = 2,
 ) -> T:
-    """Call a provider twice at most, correcting one malformed role output."""
+    """Call a provider a bounded number of times to repair malformed output."""
 
-    for attempt in range(2):
+    for attempt in range(attempts):
         try:
             return parse(provider.complete_json(system, user))
         except (ValueError, KeyError, TypeError) as error:
-            if attempt:
+            if attempt == attempts - 1:
                 raise ModelOutputError("invalid role output") from error
             user += f"\nReturn corrected JSON only. Error: {error}"
     raise AssertionError("retry loop must return or raise")
@@ -100,13 +103,24 @@ Do not return prose, actions, locators, code, or unsupported fields."""
 
 EXECUTOR_SYSTEM = """You are the Executor role in an evidence-gated Playwright tester.
 Return one JSON object with exactly this shape:
-{"action":{"kind":"click","locator":"role=button;name=Create","value":"","checkpoint_id":"c1"}}
+{"action":{"kind":"click","locator":"role=button;name=Create","value":""}}
+checkpoint_id is optional; omit it unless it exactly matches a supplied checkpoint ID.
 Choose exactly one allowed kind: goto, click, fill, select, scroll, drag, stop.
 Locators are CSS selectors, Playwright role locators formatted role=<role>;name=<name>,
 or temporary accessibility refs formatted ref=eN. Use ref=eN only when that exact ref
 appears in the current accessibility snapshot; never invent a ref or reuse one from
-history. When a role/name matches more than one element, prefer the matching current
-snapshot ref so the controller can select the intended element.
+history. When a role/name matches more than one element, use a matching current
+snapshot ref so the controller can select the intended element. If multiple
+current snapshot controls share a role/name, a role locator is invalid: choose
+one exact ref from the current snapshot before the browser action.
+The ambiguous_controls input lists repeated current controls and their valid refs.
+Use that list to select a specific ref before proposing an action.
+If pending_form_input is present, fill that active textbox with its supplied
+value before clicking a submit control.
+If pending_form_submit is present, click its exact dialog submit locator.
+If failure_hint is ambiguous_locator, the previous locator matched multiple
+elements. For the same action, choose one of allowed_next_locators (current
+snapshot refs) when that list is nonempty; do not repeat the role locator.
 For drag, use source locator => destination locator. Do not return JavaScript, evaluate,
 arbitrary code, multiple actions, or prose. If the observation URL is about:blank or
 does not match the scenario URL, the next action MUST be goto with the scenario URL.
@@ -118,6 +132,8 @@ Return one JSON object with exactly this shape:
 {"evidence":[{"checkpoint_id":"c1","observation_id":"o1","quote":"copied visible text","status":"SAT","region_id":"main"}]}
 Each entry must reference a supplied checkpoint and observation. Copy quote verbatim
 from that observation's stored visible text. Status must be SAT, VIOLATED, or UNKNOWN.
+Return at most one evidence entry per checkpoint. For a current-state presence
+check, use the newest supplied observation and quote the exact named target.
 For a checkpoint with a non-page scope, region_id is required and must name one of
 the supplied observation regions; the quote must be copied from that region's text.
 Never claim SAT for a scoped checkpoint from body text alone.
@@ -277,6 +293,21 @@ class Executor:
         )
         observation_text = _redact_values(observation.text, prior_values)
         sanitized_snapshot = _redact_values(accessibility_snapshot, prior_values)
+        ambiguous_controls = _duplicate_snapshot_controls(sanitized_snapshot)
+        safe_failure_hint = _safe_failure_hint(failure_hint)
+        candidate_refs = (
+            _matching_snapshot_refs(sanitized_snapshot, history[-1].locator)
+            if safe_failure_hint == "ambiguous_locator" and history
+            else ()
+        )
+        pending_form_input = _pending_form_input(
+            scenario, checkpoints, observation, history, sanitized_snapshot
+        )
+        pending_form_submit = _pending_form_submit(
+            scenario, checkpoints, observation, history, sanitized_snapshot
+        )
+        if _needs_return_to_scoped_start(scenario, checkpoints, observation, history):
+            return Action("goto", value=scenario.url)
         payload: dict[str, object] = {
             "scenario": {"text": scenario.text, "url": scenario.url},
             "checkpoints": [
@@ -296,7 +327,8 @@ class Executor:
                 "text": observation_text,
             },
             "accessibility_snapshot": sanitized_snapshot,
-            "failure_hint": _safe_failure_hint(failure_hint),
+            "ambiguous_controls": ambiguous_controls,
+            "failure_hint": safe_failure_hint,
             "history": [
                 {
                     "kind": action.kind,
@@ -310,6 +342,12 @@ class Executor:
                 for action in history
             ],
         }
+        if candidate_refs:
+            payload["allowed_next_locators"] = list(candidate_refs)
+        if pending_form_input is not None:
+            payload["pending_form_input"] = pending_form_input
+        if pending_form_submit is not None:
+            payload["pending_form_submit"] = pending_form_submit
         if gap_request is not None:
             payload["gap_request"] = _gap_request_payload(gap_request)
         user = "Input:\n" + _json(payload)
@@ -318,13 +356,278 @@ class Executor:
         def parse(raw: dict[str, object]) -> Action:
             if not isinstance(raw, dict):
                 raise TypeError("executor output must be an object")
-            if set(raw) - {"action"}:
+            # Small models sometimes echo read-only input fields alongside
+            # their action. Only the action can affect browser behavior.
+            if set(raw) - {
+                "action", "ambiguous_controls", "checkpoints", "failure_hint",
+                "pending_form_input", "pending_form_submit"
+            }:
                 raise ValueError("executor output has unsupported fields")
             action = parse_action(raw["action"])
+            if action.checkpoint_id and action.checkpoint_id not in checkpoint_ids:
+                # This optional label does not authorize the browser action.
+                # Discard a hallucinated label instead of discarding a valid,
+                # grounded action that would otherwise move the test forward.
+                action = Action(action.kind, action.locator, action.value)
             _validate_action(action, checkpoint_ids)
+            if pending_form_input is not None and action.kind != "stop":
+                if (
+                    action.kind != "fill"
+                    or action.locator != pending_form_input["locator"]
+                    or action.value != pending_form_input["value"]
+                ):
+                    raise ValueError("fill the active textbox before another action")
+            if pending_form_submit is not None and action.kind != "stop":
+                if action.kind != "click" or action.locator != pending_form_submit["locator"]:
+                    raise ValueError("click the current dialog submit button")
+            duplicate_refs = _matching_snapshot_refs(sanitized_snapshot, action.locator)
+            if len(duplicate_refs) > 1:
+                raise ValueError(
+                    f"role locator matches multiple current controls; choose one of {duplicate_refs}"
+                )
+            if (
+                safe_failure_hint == "ambiguous_locator"
+                and history
+                and action.kind != "stop"
+                and action.locator == history[-1].locator
+            ):
+                raise ValueError(
+                    f"ambiguous locator was already tried; choose one of {candidate_refs}"
+                )
+            if (
+                candidate_refs
+                and history
+                and action.kind == history[-1].kind
+                and action.locator not in candidate_refs
+            ):
+                raise ValueError(f"ambiguous action requires one of {candidate_refs}")
             return action
 
-        return retry_parse(self.provider, system, user, parse)
+        try:
+            return retry_parse(
+                self.provider,
+                system,
+                user,
+                parse,
+                attempts=3 if ambiguous_controls or pending_form_input or pending_form_submit else 2,
+            )
+        except ModelOutputError as error:
+            if str(error) != "invalid role output":
+                raise
+            if pending_form_input is not None:
+                # A single active textbox plus one exact scenario target is a
+                # grounded recovery path; it cannot invent an input value.
+                return Action("fill", pending_form_input["locator"], pending_form_input["value"])
+            if pending_form_submit is not None:
+                return Action("click", pending_form_submit["locator"])
+            raise
+
+
+def _matching_snapshot_refs(snapshot: str, failed_locator: str) -> tuple[str, ...]:
+    match = re.fullmatch(r"role=([^;\s]+);name=(.+)", failed_locator)
+    if match is None:
+        return ()
+    role, name = match.groups()
+    normalized_name = " ".join(name.split()).casefold()
+    candidates: list[str] = []
+    for line in snapshot.splitlines():
+        role_match = re.match(r'^\s*-\s*([\w-]+)\s+"([^"]+)"', line)
+        if role_match is None:
+            continue
+        snapshot_role, snapshot_name = role_match.groups()
+        if snapshot_role != role or normalized_name not in " ".join(snapshot_name.split()).casefold():
+            continue
+        ref_match = re.search(r"\[ref=(e\d+)\]", line)
+        if ref_match is not None:
+            candidates.append(f"ref={ref_match.group(1)}")
+    return tuple(dict.fromkeys(candidates))
+
+
+def _duplicate_snapshot_controls(snapshot: str) -> list[dict[str, object]]:
+    grouped: dict[tuple[str, str], tuple[str, list[str]]] = {}
+    for line in snapshot.splitlines():
+        role_match = re.match(r'^\s*-\s*([\w-]+)\s+"([^"]+)"', line)
+        ref_match = re.search(r"\[ref=(e\d+)\]", line)
+        if role_match is None or ref_match is None:
+            continue
+        role, name = role_match.groups()
+        key = (role, " ".join(name.split()).casefold())
+        if key not in grouped:
+            grouped[key] = (name, [])
+        grouped[key][1].append(f"ref={ref_match.group(1)}")
+    return [
+        {"role": role, "name": name, "locators": list(dict.fromkeys(refs))}
+        for (role, _), (name, refs) in grouped.items()
+        if len(set(refs)) > 1
+    ]
+
+
+def _pending_form_input(
+    scenario: Scenario,
+    checkpoints: tuple[Checkpoint, ...],
+    observation: Observation,
+    history: tuple[Action, ...],
+    snapshot: str,
+) -> dict[str, str] | None:
+    if not history or history[-1].kind != "click":
+        return None
+    targets = {
+        checkpoint.target
+        for checkpoint in checkpoints
+        if checkpoint.required and checkpoint.target and checkpoint.target in scenario.text
+    }
+    if len(targets) != 1:
+        return None
+    target = next(iter(targets))
+    if target in observation.text:
+        return None
+    active_refs = []
+    dialog_indent: int | None = None
+    for line in snapshot.splitlines():
+        indent = len(line) - len(line.lstrip())
+        if dialog_indent is not None and line.strip() and indent <= dialog_indent:
+            dialog_indent = None
+        if re.match(r"^\s*-\s*dialog\b", line):
+            dialog_indent = indent
+            continue
+        if dialog_indent is None or indent <= dialog_indent:
+            continue
+        if not re.match(r"^\s*-\s*(?:textbox|searchbox|combobox)\b", line):
+            continue
+        if "[active]" not in line:
+            continue
+        ref_match = re.search(r"\[ref=(e\d+)\]", line)
+        if ref_match is not None:
+            active_refs.append(f"ref={ref_match.group(1)}")
+    if len(set(active_refs)) != 1:
+        return None
+    return {"locator": active_refs[0], "value": target}
+
+
+def _pending_form_submit(
+    scenario: Scenario,
+    checkpoints: tuple[Checkpoint, ...],
+    observation: Observation,
+    history: tuple[Action, ...],
+    snapshot: str,
+) -> dict[str, str] | None:
+    if not history or history[-1].kind != "fill":
+        return None
+    targets = {
+        checkpoint.target
+        for checkpoint in checkpoints
+        if checkpoint.required and checkpoint.target and checkpoint.target in scenario.text
+    }
+    if len(targets) != 1 or history[-1].value != next(iter(targets)):
+        return None
+    if history[-1].value in observation.text:
+        return None
+    lines = snapshot.splitlines()
+    for index, line in enumerate(lines):
+        if not re.match(r"^\s*-\s*dialog\b", line):
+            continue
+        dialog_indent = len(line) - len(line.lstrip())
+        buttons: list[str] = []
+        for child in lines[index + 1 :]:
+            if child.strip() and len(child) - len(child.lstrip()) <= dialog_indent:
+                break
+            match = re.match(r'^\s*-\s*button\s+"([^"]+)".*\[ref=(e\d+)\]', child)
+            if match is None or "[disabled]" in child:
+                continue
+            name, ref = match.groups()
+            if name.strip().casefold() in {"cancel", "close", "back"}:
+                continue
+            buttons.append(f"ref={ref}")
+        if len(set(buttons)) == 1:
+            # Use the exact button observed in the dialog. Its type is not
+            # present in an accessibility snapshot, so a submit selector
+            # would assert an attribute that has not been observed.
+            return {"locator": buttons[0]}
+    return None
+
+
+def _needs_return_to_scoped_start(
+    scenario: Scenario,
+    checkpoints: tuple[Checkpoint, ...],
+    observation: Observation,
+    history: tuple[Action, ...],
+) -> bool:
+    """Revisit the supplied start page after submitting a named item.
+
+    A creation form can navigate to an item detail page before the requested
+    dashboard and sidebar are both observable. This is a scope driven action,
+    not a target application selector or a claim of test success.
+    """
+
+    scopes = {canonical_scope(item.scope) for item in checkpoints if item.required}
+    if not {"main", "aside"}.issubset(scopes) or len(history) < 2:
+        return False
+    fill, submit = history[-2:]
+    if fill.kind != "fill" or submit.kind != "click":
+        return False
+    targets = {item.target for item in checkpoints if item.required and item.target}
+    if len(targets) != 1 or fill.value != next(iter(targets)):
+        return False
+    # The target may also be rendered on an item detail page.  Scoped
+    # dashboard/sidebar evidence is valid only after returning to the page
+    # from which the scenario began.
+    if not same_page_url(observation.url, scenario.url):
+        return True
+    return not any(
+        canonical_scope(region.id) == "main" and fill.value in region.text
+        for region in observation.regions
+    )
+
+
+def _is_positive_presence(checkpoint: Checkpoint) -> bool:
+    if not checkpoint.target or checkpoint.target not in checkpoint.expected:
+        return False
+    expected = checkpoint.expected.casefold()
+    return bool(re.search(r"\b(?:visible|appears?|shown|exists?|listed|present)\b", expected)) and not bool(
+        re.search(r"\b(?:not|absent|missing|hidden|removed)\b", expected)
+    )
+
+
+def _grounded_positive_evidence(
+    checkpoints: tuple[Checkpoint, ...],
+    observation: Observation,
+    start_url: str,
+) -> tuple[Evidence, ...]:
+    """Recover exact visible target evidence when a model returns bad JSON.
+
+    This is deliberately limited to explicit, positive, scoped presence
+    checks. It cannot infer creation, absence, behavior, or a target missing
+    from the latest observation, and it cannot use a detail page as dashboard
+    evidence.
+    """
+
+    required = tuple(item for item in checkpoints if item.required)
+    if (
+        not required
+        or not same_page_url(observation.url, start_url)
+        or any(item.scope == "page" or not _is_positive_presence(item) for item in required)
+    ):
+        return ()
+    evidence: list[Evidence] = []
+    used_regions: set[str] = set()
+    for checkpoint in required:
+        region = next(
+            (
+                item for item in observation.regions
+                if item.id not in used_regions
+                and scope_matches_region(checkpoint.scope, item.id, item.locator)
+                and checkpoint.target in item.text
+                and checkpoint.target in observation.text
+            ),
+            None,
+        )
+        if region is None:
+            return ()
+        used_regions.add(region.id)
+        evidence.append(
+            Evidence(checkpoint.id, observation.id, checkpoint.target, "SAT", region.id)
+        )
+    return tuple(evidence)
 
 
 class Verifier:
@@ -337,8 +640,17 @@ class Verifier:
         self,
         checkpoints: tuple[Checkpoint, ...],
         observations: tuple[Observation, ...],
+        scenario_url: str = "",
     ) -> tuple[Evidence, ...] | VerificationResult:
         system = VERIFIER_SYSTEM
+        start_url = scenario_url.strip() if isinstance(scenario_url, str) else ""
+        if not start_url and observations:
+            start_url = observations[0].url
+        model_observations = (
+            observations[-1:]
+            if observations and all(_is_positive_presence(item) for item in checkpoints if item.required)
+            else observations
+        )
         user = "Verification inputs:\n" + _json(
             {
                 "checkpoints": [
@@ -352,6 +664,7 @@ class Verifier:
                     }
                     for checkpoint in checkpoints
                 ],
+                "scenario_url": start_url,
                 "observations": [
                     {
                         "id": observation.id,
@@ -363,13 +676,13 @@ class Verifier:
                             for region in observation.regions
                         ],
                     }
-                    for observation in observations
+                    for observation in model_observations
                 ],
             }
         )
         checkpoint_ids = {checkpoint.id for checkpoint in checkpoints}
-        observation_by_id = {observation.id: observation for observation in observations}
-        if len(observation_by_id) != len(observations):
+        observation_by_id = {observation.id: observation for observation in model_observations}
+        if len(observation_by_id) != len(model_observations):
             raise ValueError("observation IDs must be unique")
 
         def parse(raw: dict[str, object]) -> tuple[Evidence, ...] | VerificationResult:
@@ -380,7 +693,50 @@ class Verifier:
             values = raw["evidence"]
             if not isinstance(values, list):
                 raise TypeError("evidence must be a list")
-            evidence = tuple(parse_evidence(value) for value in values)
+            evidence_items: list[Evidence] = []
+            for value in values:
+                item = parse_evidence(value)
+                checkpoint = next(
+                    (candidate for candidate in checkpoints if candidate.id == item.checkpoint_id),
+                    None,
+                )
+                observation = observation_by_id.get(item.observation_id)
+                if (
+                    checkpoint is not None
+                    and observation is not None
+                    and item.status == "SAT"
+                    and _is_positive_presence(checkpoint)
+                ):
+                    if (
+                        checkpoint.scope != "page"
+                        and not same_page_url(observation.url, start_url)
+                    ):
+                        raise ValueError(
+                            f"scoped presence evidence for {checkpoint.id} is not from the scenario start page"
+                        )
+                    region = next(
+                        (candidate for candidate in observation.regions if candidate.id == item.region_id),
+                        None,
+                    ) if checkpoint.scope != "page" else None
+                    source = region.text if region is not None else observation.text
+                    if (
+                        item.quote not in source
+                        and
+                        (checkpoint.scope == "page" or (
+                            region is not None
+                            and scope_matches_region(checkpoint.scope, region.id, region.locator)
+                        ))
+                        and checkpoint.target in source
+                    ):
+                        item = Evidence(
+                            item.checkpoint_id,
+                            item.observation_id,
+                            checkpoint.target,
+                            item.status,
+                            item.region_id,
+                        )
+                evidence_items.append(item)
+            evidence = tuple(evidence_items)
             seen_checkpoints: set[str] = set()
             for item in evidence:
                 if item.checkpoint_id not in checkpoint_ids:
@@ -398,6 +754,15 @@ class Verifier:
                 checkpoint = next(
                     checkpoint for checkpoint in checkpoints if checkpoint.id == item.checkpoint_id
                 )
+                if (
+                    item.status == "SAT"
+                    and _is_positive_presence(checkpoint)
+                    and checkpoint.scope != "page"
+                    and not same_page_url(observation.url, start_url)
+                ):
+                    raise ValueError(
+                        f"scoped presence evidence for {checkpoint.id} is not from the scenario start page"
+                    )
                 if checkpoint.scope != "page":
                     if not item.region_id:
                         raise ValueError(
@@ -447,7 +812,17 @@ class Verifier:
             )
             return VerificationResult(evidence=evidence, gap_request=gap)
 
-        return retry_parse(self.provider, system, user, parse)
+        try:
+            return retry_parse(self.provider, system, user, parse)
+        except ModelOutputError as error:
+            if str(error) != "invalid role output" or not observations:
+                raise
+            recovered = _grounded_positive_evidence(
+                checkpoints, observations[-1], start_url
+            )
+            if recovered:
+                return recovered
+            raise
 
 
 def _validate_action(action: Action, checkpoint_ids: set[str]) -> None:

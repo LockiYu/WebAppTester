@@ -1,7 +1,8 @@
 import pytest
 
 from webapptester.browser import BrowserGateway, BudgetExhausted
-from webapptester.schema import Action, Observation
+from webapptester.controller import verdict_from_evidence
+from webapptester.schema import Action, Checkpoint, Evidence, Observation, ObservationRegion
 
 
 class _FailingLocator:
@@ -124,6 +125,174 @@ class _Store:
             screenshot="screenshot.png",
             fingerprint="fingerprint",
         )
+
+
+class _RegionElement:
+    def __init__(self, text, box):
+        self.text = text
+        self.box = box
+
+    def inner_text(self):
+        return self.text
+
+    def bounding_box(self):
+        return {"y": 0, **self.box} if self.box is not None else None
+
+
+class _RegionLocator:
+    def __init__(self, elements):
+        self.elements = elements
+
+    def count(self):
+        return len(self.elements)
+
+    def nth(self, index):
+        return self.elements[index]
+
+    def inner_text(self):
+        return self.elements[0].inner_text()
+
+    def bounding_box(self):
+        return self.elements[0].bounding_box()
+
+
+class _SpatialPage:
+    viewport_size = {"width": 1280, "height": 720}
+
+    def locator(self, selector):
+        if selector == '[class*="sidebar" i]':
+            return _RegionLocator(
+                [
+                    _RegionElement("whole page", {"x": 0, "width": 1280, "height": 720}),
+                    _RegionElement("Course Test\nAdd Project", {"x": 0, "width": 230, "height": 670}),
+                ]
+            )
+        if selector == '[class*="projects" i]':
+            return _RegionLocator(
+                [_RegionElement("Course Test\nOther project", {"x": 230, "width": 1050, "height": 670})]
+            )
+        return _RegionLocator([])
+
+
+class _OverlappingSpatialPage(_SpatialPage):
+    def locator(self, selector):
+        if selector == '[class*="projects" i]':
+            return _RegionLocator(
+                [_RegionElement("Course Test\nOther project", {"x": 200, "width": 1080, "height": 670})]
+            )
+        return super().locator(selector)
+
+
+class _SemanticSidebarOverlapPage(_OverlappingSpatialPage):
+    def locator(self, selector):
+        if selector == "aside":
+            return _RegionLocator(
+                [_RegionElement("Course Test\nSidebar", {"x": 0, "width": 500, "height": 670})]
+            )
+        return super().locator(selector)
+
+
+class _SemanticMainOverlapPage(_SpatialPage):
+    def locator(self, selector):
+        if selector == "main":
+            return _RegionLocator(
+                [_RegionElement("Course Test\nDashboard", {"x": 200, "width": 1080, "height": 670})]
+            )
+        if selector == '[class*="sidebar" i]':
+            return _RegionLocator(
+                [_RegionElement("Course Test\nSidebar", {"x": 0, "width": 500, "height": 670})]
+            )
+        return super().locator(selector)
+
+
+class _TwoSemanticRegionsPage(_SpatialPage):
+    def __init__(self, main_box):
+        self.main_box = main_box
+
+    def locator(self, selector):
+        if selector == "main":
+            return _RegionLocator([_RegionElement("Course Test\nDashboard", self.main_box)])
+        if selector == "aside":
+            return _RegionLocator(
+                [_RegionElement("Course Test\nSidebar", {"x": 0, "width": 230, "height": 670})]
+            )
+        return _RegionLocator([])
+
+
+def test_spatial_fallback_keeps_sidebar_and_dashboard_separate():
+    regions = BrowserGateway(_SpatialPage(), max_steps=2)._capture_regions()
+
+    assert [(region.id, region.text) for region in regions] == [
+        ("aside", "Course Test\nAdd Project"),
+        ("main", "Course Test\nOther project"),
+    ]
+    assert all("nth=" in region.locator for region in regions)
+
+
+def test_spatial_fallback_rejects_overlapping_dashboard_evidence():
+    regions = BrowserGateway(_OverlappingSpatialPage(), max_steps=2)._capture_regions()
+
+    assert [(region.id, region.text) for region in regions] == [
+        ("aside", "Course Test\nAdd Project"),
+    ]
+
+
+def test_spatial_main_rejects_overlap_with_semantic_sidebar():
+    regions = BrowserGateway(_SemanticSidebarOverlapPage(), max_steps=2)._capture_regions()
+
+    assert [(region.id, region.text) for region in regions] == [
+        ("aside", "Course Test\nSidebar"),
+    ]
+
+
+def test_spatial_sidebar_rejects_overlap_with_semantic_main():
+    regions = BrowserGateway(_SemanticMainOverlapPage(), max_steps=2)._capture_regions()
+
+    assert [(region.id, region.text) for region in regions] == [
+        ("main", "Course Test\nDashboard"),
+    ]
+
+
+def test_semantic_main_cannot_reuse_sidebar_pixels():
+    regions = BrowserGateway(
+        _TwoSemanticRegionsPage({"x": 0, "width": 1280, "height": 670}), max_steps=2
+    )._capture_regions()
+    assert [region.id for region in regions] == ["aside"]
+
+
+def test_separate_semantic_regions_remain_available():
+    regions = BrowserGateway(
+        _TwoSemanticRegionsPage({"x": 230, "width": 1050, "height": 670}), max_steps=2
+    )._capture_regions()
+    assert [region.id for region in regions] == ["main", "aside"]
+
+
+def test_spatial_regions_require_project_in_both_locations():
+    regions = BrowserGateway(_SpatialPage(), max_steps=2)._capture_regions()
+    checkpoints = (
+        Checkpoint("dashboard", "appears on dashboard", "Course Test", True, "dashboard", "Course Test"),
+        Checkpoint("sidebar", "appears in sidebar", "Course Test", True, "sidebar", "Course Test"),
+    )
+    evidence = (
+        Evidence("dashboard", "o1", "Course Test", "SAT", "main"),
+        Evidence("sidebar", "o1", "Course Test", "SAT", "aside"),
+    )
+    both = Observation("o1", "https://example.test", "Course Test", "shot.png", "fp", regions)
+    only_sidebar = Observation(
+        "o1",
+        "https://example.test",
+        "Course Test",
+        "shot.png",
+        "fp",
+        tuple(
+            ObservationRegion(region.id, "Other project", region.locator)
+            if region.id == "main" else region
+            for region in regions
+        ),
+    )
+
+    assert verdict_from_evidence(checkpoints, evidence, (both,)).status == "PASS"
+    assert verdict_from_evidence(checkpoints, evidence, (only_sidebar,)).status == "UNKNOWN"
 
 
 def test_failed_click_consumes_a_browser_step():

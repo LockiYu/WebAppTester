@@ -397,7 +397,7 @@ def _validate_evidence(
             checkpoint = next(
                 candidate for candidate in checkpoints if candidate["id"] == item["checkpoint_id"]
             )
-            if checkpoint.get("scope", "page") == "page":
+            if not checkpoint.get("required", True) or checkpoint.get("scope", "page") == "page":
                 continue
             key = (item["observation_id"], item.get("region_id", ""))
             if key in scoped_regions:
