@@ -193,3 +193,22 @@ reveal control. Screenshots and Playwright Trace are raw page evidence and may
 contain sensitive page content. In particular, a trace may contain session
 cookies, so it stays on disk for local inspection and is never a dashboard
 download.
+
+## Admidio fixture preparation
+
+An isolated Compose template for the course's Admidio 5.0.2 target is at
+`examples/admidio/compose.yaml`. It binds only `127.0.0.1:3102`, keeps its
+database private to the Compose network, and uses separate named volumes.
+Create the ignored, mode-`0600` database credentials with:
+
+```sh
+.venv/bin/python scripts/setup_admidio_local.py
+docker compose --env-file runs/admidio-local/instance.env \
+  -p webapptester-admidio -f examples/admidio/compose.yaml up -d
+```
+
+The application image is pinned to `admidio/admidio:v5.0.2` and requests
+`linux/amd64`. The configuration has been validated with `docker compose
+config`, but this machine's Docker Hub connection timed out while pulling the
+image, so live installation and browser login are still pending. The existing
+4gaBoards fixture and its volumes are independent.

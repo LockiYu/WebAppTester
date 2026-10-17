@@ -1,0 +1,42 @@
+services:
+  db:
+    image: mariadb:11.4
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: admidio
+      MARIADB_USER: admidio
+      MARIADB_PASSWORD: ${ADMIDIO_DB_PASSWORD:?Run scripts/setup_admidio_local.py first}
+      MARIADB_ROOT_PASSWORD: ${ADMIDIO_DB_ROOT_PASSWORD:?Run scripts/setup_admidio_local.py first}
+    volumes:
+      - admidio_db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  app:
+    image: admidio/admidio:v5.0.2
+    platform: linux/amd64
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ADMIDIO_DB_HOST: db:3306
+      ADMIDIO_DB_NAME: admidio
+      ADMIDIO_DB_USER: admidio
+      ADMIDIO_DB_PASSWORD: ${ADMIDIO_DB_PASSWORD:?Run scripts/setup_admidio_local.py first}
+      ADMIDIO_ROOT_PATH: http://127.0.0.1:3102
+    ports:
+      - "127.0.0.1:3102:8080"
+    volumes:
+      - admidio_files:/opt/app-root/src/adm_my_files
+      - admidio_plugins:/opt/app-root/src/adm_plugins
+      - admidio_themes:/opt/app-root/src/themes
+
+volumes:
+  admidio_db_data:
+  admidio_files:
+  admidio_plugins:
+  admidio_themes:
