@@ -45,3 +45,67 @@ def test_admidio_setup_rejects_existing_symlink(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="not a regular file"):
         _setup_module().create_env_file(tmp_path)
     assert target.read_text() == "keep"
+
+
+def _native_module(monkeypatch):
+    scripts = Path(__file__).parents[1] / "scripts"
+    monkeypatch.syspath_prepend(str(scripts))
+    path = scripts / "setup_admidio_native.py"
+    spec = importlib.util.spec_from_file_location("setup_admidio_native", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_native_setup_refuses_partial_existing_database(tmp_path: Path, monkeypatch) -> None:
+    module = _native_module(monkeypatch)
+    app = tmp_path / "runs" / "admidio-local" / "app" / "vendor"
+    app.mkdir(parents=True)
+    (app / "autoload.php").write_text("<?php")
+    queries: list[str] = []
+
+    def fake_mysql(query: str, *, input_text: str | None = None) -> str:
+        queries.append(query)
+        return module.DB_NAME if len(queries) == 1 else ""
+
+    monkeypatch.setattr(module, "_mysql", fake_mysql)
+    with pytest.raises(RuntimeError, match="inconsistent existing state"):
+        module.prepare_native(tmp_path)
+    assert len(queries) == 2
+    assert not (tmp_path / "runs" / "admidio-local" / "admin.env").exists()
+
+
+def test_native_setup_rejects_admin_symlink_before_database_work(tmp_path: Path, monkeypatch) -> None:
+    module = _native_module(monkeypatch)
+    app = tmp_path / "runs" / "admidio-local" / "app" / "vendor"
+    app.mkdir(parents=True)
+    (app / "autoload.php").write_text("<?php")
+    target = tmp_path / "unrelated.txt"
+    target.write_text("keep")
+    (tmp_path / "runs" / "admidio-local" / "admin.env").symlink_to(target)
+    monkeypatch.setattr(module, "_mysql", lambda *args, **kwargs: pytest.fail("database was touched"))
+
+    with pytest.raises(ValueError, match="not a regular file"):
+        module.prepare_native(tmp_path)
+    assert target.read_text() == "keep"
+
+
+def test_auth_bootstrap_rejects_state_symlink_before_browser(tmp_path: Path, monkeypatch) -> None:
+    path = Path(__file__).parents[1] / "scripts" / "bootstrap_admidio_auth.py"
+    spec = importlib.util.spec_from_file_location("bootstrap_admidio_auth", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    admin = tmp_path / "admin.env"
+    admin.write_text("ADMIDIO_ADMIN_USER=test\nADMIDIO_ADMIN_PASSWORD=private\n")
+    target = tmp_path / "unrelated.txt"
+    target.write_text("keep")
+    state = tmp_path / "auth.json"
+    state.symlink_to(target)
+    monkeypatch.setattr(module, "ADMIN_ENV", admin)
+    monkeypatch.setattr(module, "AUTH_STATE", state)
+
+    with pytest.raises(ValueError, match="not a regular file"):
+        module.bootstrap_auth()
+    assert target.read_text() == "keep"

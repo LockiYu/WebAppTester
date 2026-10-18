@@ -209,6 +209,41 @@ docker compose --env-file runs/admidio-local/instance.env \
 
 The application image is pinned to `admidio/admidio:v5.0.2` and requests
 `linux/amd64`. The configuration has been validated with `docker compose
-config`, but this machine's Docker Hub connection timed out while pulling the
-image, so live installation and browser login are still pending. The existing
-4gaBoards fixture and its volumes are independent.
+config`. Docker Hub timed out on this machine, so an official ZIP and Homebrew
+PHP fallback were used to install a separate live fixture. Its administrator
+login was verified on `http://127.0.0.1:3102/`; the existing 4gaBoards fixture
+and its volumes are independent.
+
+To reproduce that fallback on a Mac with a locally accessible MySQL server:
+
+```sh
+brew install php@8.3
+mkdir -p runs/admidio-local/app
+curl -L -C - --retry 3 \
+  -o runs/admidio-local/admidio-5.0.2.zip \
+  'https://sourceforge.net/projects/admidio/files/Admidio/5.0.x/admidio-5.0.2.zip/download'
+shasum -a 256 runs/admidio-local/admidio-5.0.2.zip
+unzip -q -n runs/admidio-local/admidio-5.0.2.zip -d runs/admidio-local/app
+.venv/bin/python scripts/setup_admidio_native.py
+/opt/homebrew/opt/php@8.3/bin/php -S 127.0.0.1:3102 -t runs/admidio-local/app
+```
+
+The verified ZIP SHA-256 is
+`0d39f410c2a0747a1a68928e31261f3d65513a6674639a7d4b7cff5d63a88d7e`.
+`setup_admidio_native.py` creates only the dedicated
+`webapptester_admidio` database and `wat_admidio` local user; it expects
+socket-based MySQL administrative access and refuses inconsistent existing
+state. Complete the official browser installer on port 3102 using the database
+password in the ignored `runs/admidio-local/instance.env`, and the test
+administrator in the ignored `runs/admidio-local/admin.env`. The database host
+is `127.0.0.1`, the organization is a disposable local test organization, and
+both private files must stay outside Git. Then save a browser login state:
+
+```sh
+.venv/bin/python scripts/bootstrap_admidio_auth.py
+```
+
+The current local fixture has 49 application tables and a verified
+administrator session. Two local Ollama `qwen2.5:3b` read-only Admidio runs
+returned `UNKNOWN` after unsupported model role output; their reports remain
+under `runs/admidio-local/`. They do not establish a failure of Admidio.
