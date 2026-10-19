@@ -82,3 +82,30 @@ Verifier did not supply complete supported evidence and the following browser
 action failed. Both remain UNKNOWN. The result viewer retains these partial
 reports. This is a pipeline smoke test with one run per cell, not a formal
 36-scenario evaluation or an estimate of relative method quality.
+
+### Reproduce the local pilot
+
+After starting the three isolated applications and refreshing their private
+login states, run:
+
+```sh
+.venv/bin/python scripts/bootstrap_4gaboards_auth.py
+.venv/bin/python scripts/bootstrap_admidio_auth.py
+.venv/bin/python scripts/bootstrap_discourse_auth.py
+.venv/bin/python scripts/run_cross_app_pilot.py
+```
+
+The last command creates one uniquely named project in the isolated 4gaBoards
+fixture, verifies it in dashboard and sidebar, and generates a private
+three-scenario manifest. It runs all four conditions with the same local
+Ollama model (`qwen3.5:9b` by default), then stores the manifest, fixture
+metadata, twelve reports and summary in a timestamped, Git-ignored directory
+under `runs/cross-app-pilot/`. Each condition sees the same project and
+scenario text within that run. Use `--variant B3` for a shorter setup check.
+The script does not contact a paid model provider.
+
+The complete one-command reproduction on 2026-10-19 produced 11 PASS and
+1 UNKNOWN across twelve runs; its summary is in
+`runs/cross-app-pilot/20261019T145631612033Z/results/ablation-summary.json`.
+All twelve reports loaded in the results dashboard. The differing UNKNOWN
+cells across two repetitions show why one run per cell is diagnostic only.

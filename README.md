@@ -269,4 +269,5 @@ verified Ollama acceptance report are documented in
 its external scenario manifest format are documented in
 [docs/ablation.md](docs/ablation.md).
 The latter also records a read-only three-application, four-condition local
-pilot and explains why it is separate from the pending formal evaluation.
+pilot, its one-command reproduction script, and why it is separate from the
+pending formal evaluation.
