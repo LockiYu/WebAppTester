@@ -142,7 +142,10 @@ def load_run(root: Path, report_path: Path) -> RunRecord:
         if expected is None or ablation != expected.to_dict():
             raise ValueError("ablation metadata does not match its variant")
         evidence_contract = expected.evidence_contract
-    _validate_evidence(evidence, observations, checkpoints, evidence_contract=evidence_contract)
+    _validate_evidence(
+        evidence, observations, checkpoints,
+        evidence_contract=evidence_contract, verdict_status=status,
+    )
     _validate_verdict_consistency(status, evidence, checkpoints)
 
     directory = resolved_report.parent
@@ -334,6 +337,7 @@ def _validate_evidence(
     checkpoints: tuple[dict[str, object], ...] = (),
     *,
     evidence_contract: bool = True,
+    verdict_status: str = "PASS",
 ) -> None:
     """Require every stored evidence claim to retain its observation provenance."""
 
@@ -355,7 +359,7 @@ def _validate_evidence(
             if item["checkpoint_id"] in checkpoint_ids:
                 raise ValueError("evidence contains duplicate checkpoint IDs")
             checkpoint_ids.add(item["checkpoint_id"])
-        if checkpoints:
+        if checkpoints and verdict_status == "PASS":
             required_ids = {
                 str(item["id"]) for item in checkpoints if item.get("required", True) is True
             }
@@ -419,7 +423,7 @@ def _validate_evidence(
             str(item["id"]) for item in checkpoints if item.get("required", True) is True
         }
         evidenced_ids = {item["checkpoint_id"] for item in evidence}
-        if not required_ids.issubset(evidenced_ids):
+        if verdict_status == "PASS" and not required_ids.issubset(evidenced_ids):
             raise ValueError("evidence is missing a required checkpoint")
         scoped_regions: set[tuple[str, str]] = set()
         for item in evidence:

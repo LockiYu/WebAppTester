@@ -60,3 +60,25 @@ token counts, and elapsed time per condition. Interpret UNKNOWN as an
 inconclusive execution outcome. Report per-scenario failures and the actual
 model, fixture, and version alongside any course result; do not infer an
 application defect from an action or provider failure.
+
+## Local cross-application pilot
+
+On 2026-10-19, one read-only scenario per isolated application was run once
+under each condition with local Ollama `qwen3.5:9b` and a five-action limit.
+The applications were 4gaBoards 3.2.16, Admidio 5.0.2, and Discourse
+`v2025.12.0-latest`. The 4gaBoards scenario checked an existing project in
+both dashboard and sidebar; Admidio and Discourse checked a destination page
+heading. Private inputs and evidence are under `runs/cross-app-pilot/`.
+
+| Condition | PASS | UNKNOWN | FAIL |
+| --- | ---: | ---: | ---: |
+| B0 | 3 | 0 | 0 |
+| B1 | 2 | 1 | 0 |
+| B2 | 2 | 1 | 0 |
+| B3 | 3 | 0 | 0 |
+
+The B1 Discourse and B2 Admidio runs reached the intended pages, but the
+Verifier did not supply complete supported evidence and the following browser
+action failed. Both remain UNKNOWN. The result viewer retains these partial
+reports. This is a pipeline smoke test with one run per cell, not a formal
+36-scenario evaluation or an estimate of relative method quality.

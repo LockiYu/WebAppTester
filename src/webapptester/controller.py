@@ -400,6 +400,27 @@ class Controller:
             initial = self.browser.observe(self.store)
             observations.append(initial)
 
+            if self._can_verify_initial_state(scenario, checkpoints, initial):
+                initial_evidence, gap_request = self._verify(
+                    checkpoints, tuple(observations), scenario.url
+                )
+                self._merge_evidence(evidence, initial_evidence)
+                current_verdict = verdict_from_evidence(
+                    checkpoints,
+                    evidence,
+                    observations,
+                    scenario_url=scenario.url,
+                    evidence_contract=(
+                        self.ablation.evidence_contract
+                        if self.ablation is not None
+                        else True
+                    ),
+                )
+                if current_verdict.status == "PASS":
+                    return self._finish(
+                        current_verdict, checkpoints, actions, observations, started
+                    )
+
             while True:
                 current_steps = self._steps(actions)
                 if current_steps >= self._budget(scenario):
@@ -732,6 +753,39 @@ class Controller:
         """Return the conservative number of browser actions still available."""
 
         return max(0, self._budget(scenario) - self._steps(actions))
+
+    @staticmethod
+    def _can_verify_initial_state(
+        scenario: Scenario, checkpoints: tuple[Checkpoint, ...], observation: Observation
+    ) -> bool:
+        """Check existing read-only targets before asking for another browser action."""
+
+        if re.match(r"\s*(?:open|verify|check|inspect|view)\b", scenario.text, re.IGNORECASE) is None:
+            return False
+        if re.search(
+            r"\b(?:create|add|edit|update|delete|remove|post|reply|submit|save|change|invite|upload|fill|type)\b",
+            scenario.text, re.IGNORECASE,
+        ) is not None:
+            return False
+        required = tuple(checkpoint for checkpoint in checkpoints if checkpoint.required)
+        if not required or any(not checkpoint.target for checkpoint in required):
+            return False
+        for checkpoint in required:
+            if checkpoint.scope == "page":
+                if checkpoint.target not in observation.text:
+                    return False
+                continue
+            if not any(
+                scope_matches_region(checkpoint.scope, region.id, region.locator)
+                and checkpoint.target in region.text
+                and (
+                    checkpoint.scope != "heading"
+                    or heading_matches_target(region.text, checkpoint.target)
+                )
+                for region in observation.regions
+            ):
+                return False
+        return True
 
     @staticmethod
     def _action_key(action: Action) -> tuple[object, ...]:

@@ -55,6 +55,23 @@ def _write_report(run: Path, report: dict[str, object]) -> Path:
     return report_path
 
 
+def test_unknown_report_with_partial_checkpoint_evidence_remains_viewable(tmp_path: Path) -> None:
+    report = _report(status="UNKNOWN")
+    report["checkpoints"] = [
+        {"id": "c1", "source": "first", "expected": "visible page", "required": True},
+        {"id": "c2", "source": "second", "expected": "visible page", "required": True},
+    ]
+
+    record = load_run(tmp_path, _write_report(tmp_path / "unknown", report))
+
+    assert record.status == "UNKNOWN"
+    assert len(record.evidence) == 1
+
+    report["verdict"]["status"] = "PASS"
+    with pytest.raises(ValueError, match="missing a required checkpoint"):
+        load_run(tmp_path, _write_report(tmp_path / "invalid-pass", report))
+
+
 def test_list_runs_returns_valid_history_newest_first_and_preserves_fields(tmp_path: Path) -> None:
     older = tmp_path / "older"
     newer = tmp_path / "newer"

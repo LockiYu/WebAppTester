@@ -268,3 +268,5 @@ verified Ollama acceptance report are documented in
 [docs/discourse-local.md](docs/discourse-local.md). The B0–B3 harness and
 its external scenario manifest format are documented in
 [docs/ablation.md](docs/ablation.md).
+The latter also records a read-only three-application, four-condition local
+pilot and explains why it is separate from the pending formal evaluation.

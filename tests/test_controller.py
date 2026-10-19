@@ -444,6 +444,44 @@ class _FakeStore:
         self.report = report
 
 
+def test_read_only_scenario_can_verify_initial_observation_without_extra_action() -> None:
+    target = "Schema Check 20261019"
+    checkpoints = (
+        Checkpoint("dashboard", "verify project", f"{target} is visible in dashboard", True, "dashboard", target),
+        Checkpoint("sidebar", "verify project", f"{target} is visible in sidebar", True, "sidebar", target),
+    )
+
+    class ExistingProjectBrowser(_FakeBrowser):
+        def observe(self, store):
+            self.observations += 1
+            return Observation(
+                "o1", "https://example.test", target, "shot.png", "existing",
+                (
+                    ObservationRegion("main", f"Dashboard project: {target}", "main"),
+                    ObservationRegion("aside", f"Sidebar project: {target}", "aside"),
+                ),
+            )
+
+    executor = _FakeExecutor([Action("click", "#unneeded")])
+    verifier = _FakeVerifier(lambda observations: (
+        Evidence("dashboard", "o1", target, "SAT", "main"),
+        Evidence("sidebar", "o1", target, "SAT", "aside"),
+    ))
+    store = _FakeStore()
+    browser = ExistingProjectBrowser()
+    scenario = Scenario(
+        f"Open the dashboard and verify project named {target}, then confirm it appears on both dashboard and sidebar.",
+        "https://example.test",
+    )
+
+    verdict = Controller(_FakePlanner(checkpoints), executor, verifier, browser, store).run(scenario)
+
+    assert verdict.status == "PASS"
+    assert executor.calls == 0
+    assert browser.steps == 0
+    assert store.report["steps"] == 0
+
+
 def _scenario(max_steps: int = 35) -> Scenario:
     return Scenario("verify this", "https://example.test", max_steps=max_steps)
 
