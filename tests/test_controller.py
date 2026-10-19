@@ -198,6 +198,24 @@ def test_old_page_heading_evidence_without_explicit_target_is_stale() -> None:
     assert verdict.status == "UNKNOWN"
 
 
+def test_current_destination_page_heading_can_pass() -> None:
+    checkpoint = Checkpoint(
+        "heading", "verify the Preferences heading is visible",
+        "Preferences heading is visible", True, "main", "Preferences",
+    )
+    observation = Observation(
+        "o-preferences", "https://example.test/preferences", "Preferences",
+        "preferences.png", "preferences",
+        (ObservationRegion("role-main", "Preferences", "main"),),
+    )
+    evidence = Evidence("heading", observation.id, "Preferences", "SAT", "role-main")
+
+    verdict = verdict_from_evidence(
+        (checkpoint,), (evidence,), (observation,), scenario_url="https://example.test/"
+    )
+    assert verdict.status == "PASS"
+
+
 def test_scoped_evidence_must_match_checkpoint_region_scope() -> None:
     checkpoint = Checkpoint("dashboard", "appears on dashboard", "Course Test", True, "dashboard")
     observation = Observation(

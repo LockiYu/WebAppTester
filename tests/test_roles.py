@@ -48,7 +48,7 @@ def test_executor_uses_action_schema_for_ollama_only() -> None:
     ]
 
 
-def test_executor_schema_keeps_other_controls_needed_to_complete_task() -> None:
+def test_executor_schema_grounds_explicit_open_then_restores_other_controls() -> None:
     class SchemaProvider(OllamaProvider):
         received_schema = None
 
@@ -61,12 +61,23 @@ def test_executor_schema_keeps_other_controls_needed_to_complete_task() -> None:
     checkpoint = Checkpoint("heading", "verify the Preferences heading is visible", "Preferences heading is visible", True, "main", "Preferences")
     snapshot = '- link " Preferences" [ref=e59]\n- button "Save" [ref=e178]'
 
-    Executor(provider).next_action(
+    executor = Executor(provider)
+    executor.next_action(
         scenario, (checkpoint,), _observation(), (), accessibility_snapshot=snapshot
+    )
+    assert provider.received_schema["properties"]["action"]["properties"]["locator"]["enum"] == [
+        "ref=e59"
+    ]
+    assert provider.received_schema["properties"]["action"]["properties"]["kind"]["enum"] == ["click"]
+
+    executor.next_action(
+        scenario, (checkpoint,), _observation(), (Action("click", "ref=e59"),),
+        accessibility_snapshot=snapshot,
     )
     assert provider.received_schema["properties"]["action"]["properties"]["locator"]["enum"] == [
         "", "ref=e59", "ref=e178"
     ]
+    assert "goto" in provider.received_schema["properties"]["action"]["properties"]["kind"]["enum"]
 
 
 def test_planner_parses_checkpoint_and_retries_with_schema_correction() -> None:
@@ -299,6 +310,26 @@ def test_verifier_accepts_only_quotes_from_observations() -> None:
     )
     checkpoints = (Checkpoint("c1", "Create a project", "project exists", True),)
     evidence = Verifier(provider).verify(checkpoints, (_observation(),))
+    assert evidence[0].status == "SAT"
+
+
+def test_verifier_accepts_current_heading_on_destination_page() -> None:
+    provider = FakeProvider({"evidence": [{
+        "checkpoint_id": "heading", "observation_id": "o2",
+        "quote": "Preferences", "status": "SAT", "region_id": "role-main",
+    }]})
+    checkpoint = Checkpoint(
+        "heading", "verify the Preferences heading is visible",
+        "Preferences heading is visible", True, "main", "Preferences",
+    )
+    observation = Observation(
+        "o2", "http://localhost/preferences", "Preferences", "shot.png", "current",
+        (ObservationRegion("role-main", "Preferences", "main"),),
+    )
+
+    evidence = Verifier(provider).verify(
+        (checkpoint,), (observation,), scenario_url="http://localhost/"
+    )
     assert evidence[0].status == "SAT"
 
 

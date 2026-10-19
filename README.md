@@ -244,6 +244,10 @@ both private files must stay outside Git. Then save a browser login state:
 ```
 
 The current local fixture has 49 application tables and a verified
-administrator session. Two local Ollama `qwen2.5:3b` read-only Admidio runs
-returned `UNKNOWN` after unsupported model role output; their reports remain
-under `runs/admidio-local/`. They do not establish a failure of Admidio.
+administrator session. A local Ollama `qwen3.5:9b` run opened Preferences and
+verified its heading in the current `main` region in two browser actions. The
+private report, screenshot, and Trace are under
+`runs/admidio-local/destination-heading-acceptance/20261019T073054762096Z/`.
+Earlier local Admidio runs returned `UNKNOWN` after unsupported model output
+or incorrect navigation. A preliminary `PASS` from stale sidebar text was
+invalidated by the current-page evidence check and is not acceptance evidence.

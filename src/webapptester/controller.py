@@ -137,6 +137,7 @@ def verdict_from_evidence(
                 )
             if (
                 status == "SAT"
+                and scope in {"dashboard", "sidebar"}
                 and _is_positive_presence(checkpoint)
                 and normalized_url(observation.url) != normalized_url(start_url)
             ):
@@ -194,6 +195,7 @@ def verdict_from_evidence(
                 )
             if (
                 status == "SAT"
+                and checkpoint.scope in {"dashboard", "sidebar"}
                 and _is_positive_presence(checkpoint)
                 and normalized_url(observation.url) != normalized_url(start_url)
             ):

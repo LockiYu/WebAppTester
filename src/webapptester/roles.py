@@ -166,7 +166,10 @@ _INTERACTIVE_SNAPSHOT_REF = re.compile(
 )
 
 
-def _executor_action_schema(snapshot: str, scenario: Scenario) -> dict[str, object]:
+def _executor_action_schema(
+    snapshot: str, scenario: Scenario, checkpoints: tuple[Checkpoint, ...],
+    history: tuple[Action, ...],
+) -> dict[str, object]:
     """Constrain local-model action locators to current interactive refs.
 
     Drag interactions need a two-part locator, so they retain the base schema.
@@ -180,8 +183,33 @@ def _executor_action_schema(snapshot: str, scenario: Scenario) -> dict[str, obje
     ))
     if not refs or "drag" in scenario.text.casefold():
         return EXECUTOR_ACTION_SCHEMA
+    open_target_refs = False
+    for checkpoint in checkpoints:
+        target = checkpoint.target.strip()
+        if not target or re.search(
+            rf"\bopen\s+{re.escape(target)}\b", scenario.text, re.IGNORECASE
+        ) is None:
+            continue
+        target_refs = tuple(dict.fromkeys(
+            f"ref={match.group(2)}"
+            for line in snapshot.splitlines()
+            if (match := re.match(
+                r'^\s*-\s*(?:link|menuitem)\s+"([^"]+)"\s+\[ref=(e\d+)\]',
+                line, re.IGNORECASE,
+            )) is not None
+            and re.search(rf"\b{re.escape(target)}\s*$", match.group(1), re.IGNORECASE)
+        ))
+        if target_refs and not any(
+            action.kind == "click" and action.locator in target_refs for action in history
+        ):
+            refs = target_refs
+            open_target_refs = True
+            break
     schema = deepcopy(EXECUTOR_ACTION_SCHEMA)
     schema["properties"]["action"]["properties"]["locator"]["enum"] = ["", *refs]
+    if open_target_refs:
+        schema["properties"]["action"]["properties"]["kind"]["enum"] = ["click"]
+        schema["properties"]["action"]["properties"]["locator"]["enum"] = list(refs)
     return schema
 
 
@@ -497,7 +525,9 @@ class Executor:
                 user,
                 parse,
                 attempts=3 if ambiguous_controls or pending_form_input or pending_form_submit else 2,
-                schema=_executor_action_schema(sanitized_snapshot, scenario),
+                schema=_executor_action_schema(
+                    sanitized_snapshot, scenario, checkpoints, history
+                ),
             )
         except ModelOutputError as error:
             if str(error) != "invalid role output":
@@ -754,7 +784,7 @@ class Verifier:
                     and _is_positive_presence(checkpoint)
                 ):
                     if (
-                        checkpoint.scope != "page"
+                        checkpoint.scope in {"dashboard", "sidebar"}
                         and not same_page_url(observation.url, start_url)
                     ):
                         raise ValueError(
@@ -803,7 +833,7 @@ class Verifier:
                 if (
                     item.status == "SAT"
                     and _is_positive_presence(checkpoint)
-                    and checkpoint.scope != "page"
+                    and checkpoint.scope in {"dashboard", "sidebar"}
                     and not same_page_url(observation.url, start_url)
                 ):
                     raise ValueError(
