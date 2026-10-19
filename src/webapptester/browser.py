@@ -23,6 +23,7 @@ DEFAULT_ACTION_TIMEOUT_MS = 5_000
 # the action budget and shorter than the page-wide Playwright timeout.
 OBSERVATION_READY_TIMEOUT_MS = 750
 OBSERVATION_POLL_INTERVAL_MS = 50
+OBSERVATION_SETTLE_MS = 500
 MAX_STEPS = 35
 
 
@@ -122,20 +123,29 @@ class BrowserGateway:
     def observe(self, store: RunStore) -> Observation:
         """Capture visible page state and persist it as append-only evidence."""
 
-        url = self.page.url
-        text = self._body_text()
-        self._capture_snapshot()
-        if not self._observation_is_meaningful(text):
-            text = self._wait_for_observation_ready(text)
-        screenshot = self.page.screenshot(full_page=True)
-        regions = self._capture_regions()
-        if regions:
-            return store.save_observation(
-                url=url, text=text, screenshot=screenshot, regions=regions
-            )
-        # Keep lightweight gateways and legacy stores source-compatible when a
-        # page exposes no capturable semantic regions.
-        return store.save_observation(url=url, text=text, screenshot=screenshot)
+        wait_for_timeout = getattr(self.page, "wait_for_timeout", None)
+        if self.steps and callable(wait_for_timeout):
+            # SPA clicks can return before their route and content settle.
+            wait_for_timeout(OBSERVATION_SETTLE_MS)
+        for attempt in range(2):
+            url = self.page.url
+            text = self._body_text()
+            self._capture_snapshot()
+            if not self._observation_is_meaningful(text):
+                text = self._wait_for_observation_ready(text)
+            screenshot = self.page.screenshot(full_page=True)
+            regions = self._capture_regions()
+            if self.page.url == url:
+                if regions:
+                    return store.save_observation(
+                        url=url, text=text, screenshot=screenshot, regions=regions
+                    )
+                # Keep lightweight gateways and legacy stores source-compatible
+                # when a page exposes no capturable semantic regions.
+                return store.save_observation(url=url, text=text, screenshot=screenshot)
+            if attempt == 0 and callable(wait_for_timeout):
+                wait_for_timeout(OBSERVATION_SETTLE_MS)
+        raise RuntimeError("page URL changed during observation capture")
 
     def _body_text(self) -> str:
         return self.page.locator("body").inner_text()[:20_000]
@@ -193,6 +203,7 @@ class BrowserGateway:
             ("role-main", '[role="main"]'),
             ("role-complementary", '[role="complementary"]'),
             ("evidence-region", "[data-evidence-region]"),
+            ("heading", 'h1,h2,h3,h4,h5,h6,[role="heading"]'),
         )
         regions: list[ObservationRegion] = []
         region_boxes: dict[str, dict[str, float] | None] = {}
@@ -210,10 +221,23 @@ class BrowserGateway:
             for index in range(count):
                 try:
                     target = locator.nth(index) if count > 1 else locator
+                    if region_id == "heading" and (
+                        not target.is_visible()
+                        or target.evaluate(
+                            '(el) => !!el.closest("aside,nav,a,tr,[role=complementary],[role=navigation],[role=link],[role=row]")'
+                        )
+                        or not (box := target.bounding_box())
+                        or box["width"] < 8
+                        or box["height"] < 8
+                    ):
+                        continue
                     text = target.inner_text()[:20_000]
                 except Exception:
                     continue
-                if not isinstance(text, str) or not text.strip() or text in seen_text:
+                if (
+                    not isinstance(text, str) or not text.strip()
+                    or (text in seen_text and region_id != "heading")
+                ):
                     continue
                 seen_text.add(text)
                 suffix = f"[{index}]" if count > 1 else ""

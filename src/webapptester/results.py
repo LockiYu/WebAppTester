@@ -7,6 +7,7 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
+from .ablation import AblationConfig
 from .schema import (
     ACTION_KINDS,
     checkpoint_target_supported,
@@ -129,7 +130,19 @@ def load_run(root: Path, report_path: Path) -> RunRecord:
     observations = _parse_observations(raw["observations"])
     checkpoints = _parse_checkpoints(raw.get("checkpoints", []))
     status, reason, evidence = _parse_verdict(raw["verdict"])
-    _validate_evidence(evidence, observations, checkpoints)
+    evidence_contract = True
+    if "ablation" in raw:
+        ablation = raw["ablation"]
+        if not isinstance(ablation, dict) or set(ablation) != {
+            "variant", "evidence_contract", "gap_feedback", "budget_arbitration"
+        }:
+            raise ValueError("ablation metadata is invalid")
+        variant = ablation.get("variant")
+        expected = AblationConfig.for_variant(variant) if isinstance(variant, str) else None
+        if expected is None or ablation != expected.to_dict():
+            raise ValueError("ablation metadata does not match its variant")
+        evidence_contract = expected.evidence_contract
+    _validate_evidence(evidence, observations, checkpoints, evidence_contract=evidence_contract)
     _validate_verdict_consistency(status, evidence, checkpoints)
 
     directory = resolved_report.parent
@@ -319,6 +332,8 @@ def _validate_evidence(
     evidence: tuple[dict[str, str], ...],
     observations: tuple[dict[str, object], ...],
     checkpoints: tuple[dict[str, object], ...] = (),
+    *,
+    evidence_contract: bool = True,
 ) -> None:
     """Require every stored evidence claim to retain its observation provenance."""
 
@@ -333,6 +348,20 @@ def _validate_evidence(
         observation_by_id[observation_id] = observation
     checkpoint_ids: set[str] = set()
     declared_checkpoint_ids = {str(item["id"]) for item in checkpoints}
+    if not evidence_contract:
+        for item in evidence:
+            if checkpoints and item["checkpoint_id"] not in declared_checkpoint_ids:
+                raise ValueError("evidence references an undeclared checkpoint")
+            if item["checkpoint_id"] in checkpoint_ids:
+                raise ValueError("evidence contains duplicate checkpoint IDs")
+            checkpoint_ids.add(item["checkpoint_id"])
+        if checkpoints:
+            required_ids = {
+                str(item["id"]) for item in checkpoints if item.get("required", True) is True
+            }
+            if not required_ids.issubset(checkpoint_ids):
+                raise ValueError("evidence is missing a required checkpoint")
+        return
     for item in evidence:
         checkpoint_id = item["checkpoint_id"]
         if checkpoints and checkpoint_id not in declared_checkpoint_ids:

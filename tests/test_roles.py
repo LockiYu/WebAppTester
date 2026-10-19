@@ -58,7 +58,7 @@ def test_executor_schema_grounds_explicit_open_then_restores_other_controls() ->
 
     provider = SchemaProvider("local-model")
     scenario = Scenario("Open Preferences and verify the Preferences heading is visible", "http://localhost")
-    checkpoint = Checkpoint("heading", "verify the Preferences heading is visible", "Preferences heading is visible", True, "main", "Preferences")
+    checkpoint = Checkpoint("heading", "verify the Preferences heading is visible", "Preferences heading is visible", True, "heading", "Preferences")
     snapshot = '- link " Preferences" [ref=e59]\n- button "Save" [ref=e178]'
 
     executor = Executor(provider)
@@ -78,6 +78,37 @@ def test_executor_schema_grounds_explicit_open_then_restores_other_controls() ->
         "", "ref=e59", "ref=e178"
     ]
     assert "goto" in provider.received_schema["properties"]["action"]["properties"]["kind"]["enum"]
+
+
+def test_executor_matches_topic_link_with_accessibility_icon_suffix() -> None:
+    class SchemaProvider(OllamaProvider):
+        received_schema = None
+
+        def complete_json(self, system: str, user: str, *, schema=None):
+            self.received_schema = schema
+            return {"action": {"kind": "click", "locator": "ref=e143", "value": ""}}
+
+    provider = SchemaProvider("local-model")
+    scenario = Scenario(
+        "Open Welcome to Discourse! and verify the Welcome to Discourse! heading is visible.",
+        "http://localhost",
+    )
+    checkpoint = Checkpoint(
+        "heading", "verify the Welcome to Discourse! heading is visible",
+        "Welcome to Discourse! heading is visible", True, "heading", "Welcome to Discourse!",
+    )
+    snapshot = (
+        '- link "blue_book General" [ref=e61]\n'
+        '- link "Welcome to Discourse! wave" [ref=e143]'
+    )
+
+    Executor(provider).next_action(
+        scenario, (checkpoint,), _observation(), (), accessibility_snapshot=snapshot
+    )
+
+    assert provider.received_schema["properties"]["action"]["properties"]["locator"]["enum"] == [
+        "ref=e143"
+    ]
 
 
 def test_planner_parses_checkpoint_and_retries_with_schema_correction() -> None:
@@ -116,8 +147,23 @@ def test_planner_preserves_explicit_heading_assertion_scope_and_target() -> None
     checkpoint, = Planner(provider).plan(scenario)
     assert checkpoint.source == "verify the Preferences heading is visible"
     assert checkpoint.target == "Preferences"
-    assert checkpoint.scope == "main"
+    assert checkpoint.scope == "heading"
     assert checkpoint.expected == "Preferences heading is visible"
+
+
+def test_planner_preserves_punctuation_in_named_heading() -> None:
+    scenario = Scenario(
+        "Open Welcome to Discourse! and verify the Welcome to Discourse! heading is visible.",
+        "http://localhost",
+    )
+    provider = FakeProvider({"checkpoints": [{
+        "id": "c1", "source": "verify the Welcome to Discourse! heading is visible",
+        "expected": "Welcome to Discourse! is visible", "required": True,
+    }]})
+
+    checkpoint, = Planner(provider).plan(scenario)
+    assert checkpoint.target == "Welcome to Discourse!"
+    assert checkpoint.scope == "heading"
 
 
 def test_planner_retries_checkpoint_without_explicit_required_boolean() -> None:
@@ -316,15 +362,15 @@ def test_verifier_accepts_only_quotes_from_observations() -> None:
 def test_verifier_accepts_current_heading_on_destination_page() -> None:
     provider = FakeProvider({"evidence": [{
         "checkpoint_id": "heading", "observation_id": "o2",
-        "quote": "Preferences", "status": "SAT", "region_id": "role-main",
+        "quote": "Preferences", "status": "SAT", "region_id": "heading",
     }]})
     checkpoint = Checkpoint(
         "heading", "verify the Preferences heading is visible",
-        "Preferences heading is visible", True, "main", "Preferences",
+        "Preferences heading is visible", True, "heading", "Preferences",
     )
     observation = Observation(
         "o2", "http://localhost/preferences", "Preferences", "shot.png", "current",
-        (ObservationRegion("role-main", "Preferences", "main"),),
+        (ObservationRegion("heading", "Preferences", "h1"),),
     )
 
     evidence = Verifier(provider).verify(

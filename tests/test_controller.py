@@ -201,19 +201,39 @@ def test_old_page_heading_evidence_without_explicit_target_is_stale() -> None:
 def test_current_destination_page_heading_can_pass() -> None:
     checkpoint = Checkpoint(
         "heading", "verify the Preferences heading is visible",
-        "Preferences heading is visible", True, "main", "Preferences",
+        "Preferences heading is visible", True, "heading", "Preferences",
     )
     observation = Observation(
         "o-preferences", "https://example.test/preferences", "Preferences",
         "preferences.png", "preferences",
-        (ObservationRegion("role-main", "Preferences", "main"),),
+        (ObservationRegion("heading", "Preferences", "h1"),),
     )
-    evidence = Evidence("heading", observation.id, "Preferences", "SAT", "role-main")
+    evidence = Evidence("heading", observation.id, "Preferences", "SAT", "heading")
 
     verdict = verdict_from_evidence(
         (checkpoint,), (evidence,), (observation,), scenario_url="https://example.test/"
     )
     assert verdict.status == "PASS"
+
+
+def test_sidebar_word_and_partial_heading_cannot_satisfy_named_heading() -> None:
+    checkpoint = Checkpoint(
+        "heading", "verify the Categories heading is visible",
+        "Categories heading is visible", True, "heading", "Categories",
+    )
+    observation = Observation(
+        "o-categories", "https://example.test/categories",
+        "CATEGORIES\nAll categories", "categories.png", "categories",
+        (
+            ObservationRegion("role-main", "CATEGORIES\nAll categories", '[role="main"]'),
+            ObservationRegion("heading[0]", "All categories", "h1"),
+        ),
+    )
+    sidebar_claim = Evidence("heading", observation.id, "CATEGORIES", "SAT", "role-main")
+    partial_heading = Evidence("heading", observation.id, "categories", "SAT", "heading[0]")
+
+    assert verdict_from_evidence((checkpoint,), (sidebar_claim,), (observation,)).status == "UNKNOWN"
+    assert verdict_from_evidence((checkpoint,), (partial_heading,), (observation,)).status == "UNKNOWN"
 
 
 def test_scoped_evidence_must_match_checkpoint_region_scope() -> None:

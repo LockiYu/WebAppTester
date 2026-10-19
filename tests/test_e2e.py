@@ -31,6 +31,26 @@ def _launch_browser(playwright: Playwright):
     return cli._launch_chromium(playwright.chromium)
 
 
+def test_heading_regions_exclude_navigation_labels() -> None:
+    with sync_playwright() as playwright:
+        browser = _launch_browser(playwright)
+        try:
+            page = browser.new_page()
+            page.set_content(
+                '<main><nav><h2>Categories</h2></nav>'
+                '<h1 style="width:1px;height:1px;overflow:hidden">Hidden heading</h1>'
+                '<div role="row"><span role="heading">Topic list title</span></div>'
+                '<h1>All categories</h1></main>'
+            )
+            regions = BrowserGateway(page, max_steps=2)._capture_regions()
+        finally:
+            browser.close()
+
+    assert [region.text for region in regions if region.id.startswith("heading")] == [
+        "All categories"
+    ]
+
+
 def test_cli_prefers_managed_full_chromium() -> None:
     class Chromium:
         def __init__(self):

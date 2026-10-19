@@ -67,6 +67,19 @@ class _SnapshotPage:
         return _WorkingLocator(self, matches=2)
 
 
+class _ChangingURLPage(_SnapshotPage):
+    def __init__(self):
+        super().__init__(["- link [ref=e1]", "- link [ref=e2]"])
+        self.url = "https://example.test/old"
+        self.screenshots = 0
+
+    def screenshot(self, *, full_page):
+        self.screenshots += 1
+        if self.screenshots == 1:
+            self.url = "https://example.test/new"
+        return super().screenshot(full_page=full_page)
+
+
 class _BodyLocator:
     def inner_text(self):
         return "Visible page text"
@@ -366,6 +379,17 @@ def test_observation_keeps_sanitized_snapshot_and_dispatches_latest_ref():
     assert stale.success is False
     assert stale.error.startswith("InvalidRefError:")
     assert current.success is True
+
+
+def test_observation_recaptures_when_route_changes_mid_capture():
+    page = _ChangingURLPage()
+    gateway = BrowserGateway(page, max_steps=2)
+
+    observation = gateway.observe(_Store())
+
+    assert observation.url == "https://example.test/new"
+    assert page.screenshots == 2
+    assert gateway.latest_snapshot == "- link [ref=e2]"
 
 
 def test_observation_waits_for_hydrated_body_and_snapshot_without_spending_steps():

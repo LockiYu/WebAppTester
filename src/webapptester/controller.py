@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from .ablation import AblationConfig
 from .browser import BudgetExhausted
 from .providers import ModelOutputError
 from .schema import (
@@ -25,6 +26,7 @@ from .schema import (
     Scenario,
     Verdict,
     checkpoint_target_supported,
+    heading_matches_target,
     normalized_url,
     scope_matches_region,
 )
@@ -61,6 +63,7 @@ def verdict_from_evidence(
     observations: Iterable[Observation],
     *,
     scenario_url: str = "",
+    evidence_contract: bool = True,
 ) -> Verdict:
     """Return a verdict only when evidence is directly grounded in observations.
 
@@ -73,6 +76,59 @@ def verdict_from_evidence(
     checkpoint_values = tuple(checkpoints)
     evidence_values = tuple(evidence)
     observation_values = tuple(observations)
+
+    if type(evidence_contract) is not bool:
+        raise TypeError("evidence_contract must be a boolean")
+    if not evidence_contract:
+        # B0 deliberately preserves the ordinary three-role baseline: the
+        # verifier's structured status is accepted without the provenance,
+        # quote, region, target, and freshness checks introduced by B1. Keep
+        # checkpoint accounting so the comparison remains interpretable.
+        required = tuple(checkpoint for checkpoint in checkpoint_values if checkpoint.required)
+        if not required:
+            return Verdict(
+                status="UNKNOWN",
+                evidence=evidence_values,
+                reason="no required checkpoints were supplied",
+            )
+        checkpoint_ids = {checkpoint.id for checkpoint in checkpoint_values}
+        by_checkpoint: dict[str, list[Evidence]] = {}
+        for item in evidence_values:
+            if not isinstance(item, Evidence) or item.checkpoint_id not in checkpoint_ids:
+                return Verdict(
+                    status="UNKNOWN",
+                    evidence=evidence_values,
+                    reason="baseline verifier output names an unsupported checkpoint",
+                )
+            by_checkpoint.setdefault(item.checkpoint_id, []).append(item)
+        supported: list[Evidence] = []
+        for checkpoint in required:
+            candidates = by_checkpoint.get(checkpoint.id, [])
+            if len(candidates) != 1:
+                return Verdict(
+                    status="UNKNOWN",
+                    evidence=evidence_values,
+                    reason=f"required checkpoint {checkpoint.id} lacks one verifier result",
+                )
+            supported.append(candidates[0])
+        if any(item.status == "UNKNOWN" for item in supported):
+            return Verdict(
+                status="UNKNOWN",
+                evidence=evidence_values,
+                reason="a required checkpoint remains UNKNOWN",
+            )
+        if any(item.status == "VIOLATED" for item in supported):
+            return Verdict(
+                status="FAIL",
+                evidence=evidence_values,
+                reason="the baseline verifier marked a required checkpoint VIOLATED",
+            )
+        return Verdict(
+            status="PASS",
+            evidence=evidence_values,
+            reason="the baseline verifier marked all required checkpoints SAT",
+        )
+
     start_url = scenario_url.strip() if isinstance(scenario_url, str) else ""
     if not start_url and observation_values:
         start_url = observation_values[0].url
@@ -135,6 +191,13 @@ def verdict_from_evidence(
                     evidence=evidence_values,
                     reason=f"required checkpoint {checkpoint_id} lacks region-grounded evidence",
                 )
+            if status == "SAT" and scope == "heading" and not heading_matches_target(
+                region.text, checkpoint.target
+            ):
+                return Verdict(
+                    status="UNKNOWN", evidence=evidence_values,
+                    reason=f"required checkpoint {checkpoint_id} lacks an exact heading",
+                )
             if (
                 status == "SAT"
                 and scope in {"dashboard", "sidebar"}
@@ -192,6 +255,13 @@ def verdict_from_evidence(
                     status="UNKNOWN",
                     evidence=evidence_values,
                     reason=f"required checkpoint {checkpoint.id} lacks region-grounded evidence",
+                )
+            if status == "SAT" and checkpoint.scope == "heading" and not heading_matches_target(
+                region.text, checkpoint.target
+            ):
+                return Verdict(
+                    status="UNKNOWN", evidence=evidence_values,
+                    reason=f"required checkpoint {checkpoint.id} lacks an exact heading",
                 )
             if (
                 status == "SAT"
@@ -295,12 +365,21 @@ def _is_positive_presence(checkpoint: Checkpoint) -> bool:
 class Controller:
     """Run one scenario through the supplied roles and browser gateway."""
 
-    def __init__(self, planner: Any, executor: Any, verifier: Any, browser: Any, store: Any) -> None:
+    def __init__(
+        self,
+        planner: Any,
+        executor: Any,
+        verifier: Any,
+        browser: Any,
+        store: Any,
+        ablation: AblationConfig | None = None,
+    ) -> None:
         self.planner = planner
         self.executor = executor
         self.verifier = verifier
         self.browser = browser
         self.store = store
+        self.ablation = ablation
 
     def run(self, scenario: Scenario) -> Verdict:
         started = time.monotonic()
@@ -325,6 +404,23 @@ class Controller:
                 current_steps = self._steps(actions)
                 if current_steps >= self._budget(scenario):
                     stop_reason = "browser action budget exhausted"
+                    break
+
+                if (
+                    self.ablation is not None
+                    and self.ablation.budget_arbitration
+                    and gap_request is not None
+                    and gap_request.estimated_action_cost > self._remaining_budget(scenario, actions)
+                ):
+                    stop_reason = "budget arbitration declined verifier gap request"
+                    self.store.append_event(
+                        {
+                            "type": "budget_arbitration",
+                            "decision": "decline_gap",
+                            "estimated_action_cost": gap_request.estimated_action_cost,
+                            "remaining_steps": self._remaining_budget(scenario, actions),
+                        }
+                    )
                     break
 
                 action = self._next_action(
@@ -410,6 +506,11 @@ class Controller:
                     evidence,
                     observations,
                     scenario_url=scenario.url,
+                    evidence_contract=(
+                        self.ablation.evidence_contract
+                        if self.ablation is not None
+                        else True
+                    ),
                 )
 
                 if current_verdict.status in {"PASS", "FAIL"}:
@@ -480,6 +581,8 @@ class Controller:
                 "evidence": [asdict(item) for item in verdict.evidence],
             },
         }
+        if self.ablation is not None:
+            report["ablation"] = self.ablation.to_dict()
         self.store.write_report(report)
         return verdict
 
@@ -531,6 +634,8 @@ class Controller:
         evidence = tuple(values)
         if not all(isinstance(item, Evidence) for item in evidence):
             raise ValueError("verifier returned invalid evidence")
+        if self.ablation is not None and not self.ablation.gap_feedback:
+            gap = None
         return evidence, gap
 
     def _next_action(
@@ -579,6 +684,13 @@ class Controller:
         if explicit_keyword("failure_hint") or accepts_var_kwargs:
             optional["failure_hint"] = failure_hint
 
+        if (
+            self.ablation is not None
+            and self.ablation.budget_arbitration
+            and (explicit_keyword("budget_remaining") or accepts_var_kwargs)
+        ):
+            optional["budget_remaining"] = self._remaining_budget(scenario, list(history))
+
         return method(scenario, checkpoints, observation, history, **optional)
 
     def _latest_snapshot(self) -> str:
@@ -615,6 +727,11 @@ class Controller:
         if type(browser_budget) is not int:
             browser_budget = MAX_STEPS
         return min(scenario.max_steps, browser_budget, MAX_STEPS)
+
+    def _remaining_budget(self, scenario: Scenario, actions: list[Action]) -> int:
+        """Return the conservative number of browser actions still available."""
+
+        return max(0, self._budget(scenario) - self._steps(actions))
 
     @staticmethod
     def _action_key(action: Action) -> tuple[object, ...]:

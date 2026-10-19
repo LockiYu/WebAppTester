@@ -14,6 +14,7 @@ from typing import Any
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
+from .ablation import AblationConfig, VARIANT_ORDER
 from .browser import BrowserGateway, MAX_STEPS
 from .controller import Controller
 from .providers import DeepSeekProvider, ModelOutputError, OllamaProvider
@@ -30,6 +31,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", help="Provider model (defaults to qwen2.5:3b or DeepSeek flash)")
     parser.add_argument("--output", type=Path, default=Path("runs/demo"))
     parser.add_argument("--max-steps", type=int, default=MAX_STEPS)
+    parser.add_argument(
+        "--ablation-variant",
+        choices=VARIANT_ORDER,
+        help="Optional B0-B3 ablation condition; omit for the normal configured runner",
+    )
     parser.add_argument(
         "--storage-state",
         type=Path,
@@ -113,6 +119,22 @@ def run(args: argparse.Namespace) -> tuple[int, Path]:
     store = RunStore(output)
     trace_path = output / "trace.zip"
     max_steps = args.max_steps
+    ablation_variant = getattr(args, "ablation_variant", None)
+    try:
+        ablation = (
+            AblationConfig.for_variant(ablation_variant)
+            if ablation_variant is not None
+            else None
+        )
+    except (TypeError, ValueError):
+        report = _unknown_report(
+            store,
+            trace_path=trace_path,
+            started=started,
+            reason="invalid ablation variant",
+        )
+        print(f"UNKNOWN: invalid ablation variant; report={report}", file=sys.stderr)
+        return 2, report
     if type(max_steps) is not int or not 1 <= max_steps <= MAX_STEPS:
         report = _unknown_report(
             store,
@@ -154,7 +176,10 @@ def run(args: argparse.Namespace) -> tuple[int, Path]:
     scenario = Scenario(args.scenario, args.url, max_steps=max_steps)
     planner = Planner(provider)
     executor = Executor(provider)
-    verifier = Verifier(provider)
+    verifier = Verifier(
+        provider,
+        evidence_contract=ablation.evidence_contract if ablation is not None else True,
+    )
     browser = None
     context = None
     trace_started = False
@@ -173,7 +198,14 @@ def run(args: argparse.Namespace) -> tuple[int, Path]:
                 page = context.new_page()
                 gateway = BrowserGateway(page, max_steps=max_steps)
                 gateway.trace_path = trace_path
-                controller = Controller(planner, executor, verifier, gateway, store)
+                controller = Controller(
+                    planner,
+                    executor,
+                    verifier,
+                    gateway,
+                    store,
+                    ablation=ablation,
+                )
                 # Start every CLI run on the requested page. This consumes one
                 # controlled browser step and avoids asking a small local model
                 # to recover from Playwright's initial about:blank page.

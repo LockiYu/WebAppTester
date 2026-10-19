@@ -24,6 +24,7 @@ from .schema import (
     Scenario,
     canonical_scope,
     checkpoint_target_supported,
+    heading_matches_target,
     location_scope_pair,
     parse_action,
     parse_checkpoints,
@@ -187,7 +188,7 @@ def _executor_action_schema(
     for checkpoint in checkpoints:
         target = checkpoint.target.strip()
         if not target or re.search(
-            rf"\bopen\s+{re.escape(target)}\b", scenario.text, re.IGNORECASE
+            rf"\bopen\s+{re.escape(target)}(?=\s|$)", scenario.text, re.IGNORECASE
         ) is None:
             continue
         target_refs = tuple(dict.fromkeys(
@@ -197,7 +198,9 @@ def _executor_action_schema(
                 r'^\s*-\s*(?:link|menuitem)\s+"([^"]+)"\s+\[ref=(e\d+)\]',
                 line, re.IGNORECASE,
             )) is not None
-            and re.search(rf"\b{re.escape(target)}\s*$", match.group(1), re.IGNORECASE)
+            and re.search(
+                rf"(?:^|\s){re.escape(target)}(?=\s|$)", match.group(1), re.IGNORECASE
+            )
         ))
         if target_refs and not any(
             action.kind == "click" and action.locator in target_refs for action in history
@@ -223,6 +226,8 @@ check, use the newest supplied observation and quote the exact named target.
 For a checkpoint with a non-page scope, region_id is required and must name one of
 the supplied observation regions; the quote must be copied from that region's text.
 Never claim SAT for a scoped checkpoint from body text alone.
+For a heading checkpoint, cite a heading region containing the complete named
+heading; a navigation label or text elsewhere in main content is insufficient.
 When required evidence is not available, optionally include
 {"gap_request":{"checkpoint_id":"c1","requested_evidence":"visible sidebar link",
 "suggested_location":"sidebar","estimated_action_cost":1}}.
@@ -261,7 +266,9 @@ class Planner:
                 remaining: list[Checkpoint] = []
                 for item in raw_checkpoints:
                     expected = item.get("expected", "")
-                    if isinstance(expected, str) and "heading" in expected.casefold():
+                    if (
+                        isinstance(expected, str) and "heading" in expected.casefold()
+                    ) or item.get("source") == heading_checkpoint.source:
                         continue
                     checkpoint = parse_checkpoints([item])[0]
                     if checkpoint.source not in scenario.text:
@@ -300,7 +307,7 @@ def _explicit_heading_checkpoint(scenario: Scenario) -> Checkpoint | None:
     """Ground a named visible heading in the main content of the final page."""
 
     match = re.search(
-        r"\bverify\s+(?:the\s+)?(?P<target>[A-Za-z][A-Za-z0-9 _-]{0,80}?)"
+        r"\bverify\s+(?:the\s+)?(?P<target>[A-Za-z][A-Za-z0-9 _!?.-]{0,80}?)"
         r"\s+heading\s+is\s+visible\b",
         scenario.text,
         re.IGNORECASE,
@@ -309,7 +316,7 @@ def _explicit_heading_checkpoint(scenario: Scenario) -> Checkpoint | None:
         return None
     target = match.group("target").strip()
     return Checkpoint(
-        "heading", match.group(0), f"{target} heading is visible", True, "main", target
+        "heading", match.group(0), f"{target} heading is visible", True, "heading", target
     )
 
 
@@ -401,6 +408,7 @@ class Executor:
         gap_request: GapRequest | object | None = None,
         accessibility_snapshot: str = "",
         failure_hint: str = "",
+        budget_remaining: int | None = None,
     ) -> Action:
         system = EXECUTOR_SYSTEM
         prior_values = tuple(
@@ -465,6 +473,10 @@ class Executor:
             payload["pending_form_submit"] = pending_form_submit
         if gap_request is not None:
             payload["gap_request"] = _gap_request_payload(gap_request)
+        if budget_remaining is not None:
+            if type(budget_remaining) is not int or budget_remaining < 0:
+                raise ValueError("budget_remaining must be a non-negative integer")
+            payload["budget_remaining"] = budget_remaining
         user = "Input:\n" + _json(payload)
         checkpoint_ids = {checkpoint.id for checkpoint in checkpoints}
 
@@ -709,8 +721,11 @@ def _is_positive_presence(checkpoint: Checkpoint) -> bool:
 class Verifier:
     """Map stored observations to evidence with strict provenance checks."""
 
-    def __init__(self, provider: ModelProvider) -> None:
+    def __init__(self, provider: ModelProvider, *, evidence_contract: bool = True) -> None:
+        if type(evidence_contract) is not bool:
+            raise TypeError("evidence_contract must be a boolean")
         self.provider = provider
+        self.evidence_contract = evidence_contract
 
     def verify(
         self,
@@ -820,6 +835,8 @@ class Verifier:
                 if item.checkpoint_id in seen_checkpoints:
                     raise ValueError(f"duplicate evidence for checkpoint: {item.checkpoint_id}")
                 seen_checkpoints.add(item.checkpoint_id)
+                if not self.evidence_contract:
+                    continue
                 observation = observation_by_id.get(item.observation_id)
                 if observation is None:
                     raise ValueError(f"unknown observation ID: {item.observation_id}")
@@ -856,6 +873,10 @@ class Verifier:
                         raise ValueError(
                             f"evidence quote is not grounded in region {item.region_id}"
                         )
+                    if item.status == "SAT" and checkpoint.scope == "heading" and not heading_matches_target(
+                        region.text, checkpoint.target
+                    ):
+                        raise ValueError("SAT heading does not match its named target")
                 if item.status == "SAT" and not checkpoint_target_supported(
                     checkpoint.target, checkpoint.expected, item.quote
                 ):

@@ -62,7 +62,7 @@ def is_atomic_scope(value: str) -> bool:
 def canonical_scope(value: str) -> str:
     """Normalize the small semantic aliases accepted for standard regions."""
 
-    normalized = value.strip().casefold()
+    normalized = re.sub(r"\[\d+\]$", "", value.strip().casefold())
     return _SCOPE_ALIASES.get(normalized, normalized)
 
 
@@ -165,6 +165,14 @@ def scope_matches_region(scope: str, region_id: str, locator: str) -> bool:
 
     declared = canonical_scope(scope)
     return declared in {canonical_scope(region_id), canonical_scope(locator)}
+
+
+def heading_matches_target(text: str, target: str) -> bool:
+    """Require the complete visible heading to match the named target."""
+
+    return bool(target.strip()) and " ".join(text.split()).casefold() == " ".join(
+        target.split()
+    ).casefold()
 
 
 @dataclass(frozen=True, slots=True)

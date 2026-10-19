@@ -175,6 +175,14 @@ Run the tests with:
 .venv/bin/python -m pytest -q
 ```
 
+## B0-B3 ablation harness
+
+The formal 36-scenario set is not included in this repository. When it is
+released, supply it as a private manifest and run the local-only comparison
+described in [docs/ablation.md](docs/ablation.md). The harness keeps the four
+conditions and writes per-scenario outcomes and metrics without claiming a
+score before the scenarios are actually executed.
+
 ## Results dashboard
 
 Install the optional Streamlit UI and start the read-only dashboard with:
@@ -245,9 +253,18 @@ both private files must stay outside Git. Then save a browser login state:
 
 The current local fixture has 49 application tables and a verified
 administrator session. A local Ollama `qwen3.5:9b` run opened Preferences and
-verified its heading in the current `main` region in two browser actions. The
-private report, screenshot, and Trace are under
-`runs/admidio-local/destination-heading-acceptance/20261019T073054762096Z/`.
+verified its visible `heading` region in two browser actions. The private
+report, screenshot, and Trace are under
+`runs/admidio-local/semantic-heading-acceptance/20261019T082127941731Z/`.
 Earlier local Admidio runs returned `UNKNOWN` after unsupported model output
 or incorrect navigation. A preliminary `PASS` from stale sidebar text was
 invalidated by the current-page evidence check and is not acceptance evidence.
+
+## Local Discourse fixture
+
+The isolated Discourse `v2025.12.0-latest` fixture runs on macOS with local
+PostgreSQL, Redis, Rails and Ember. Setup, ports, private login state and a
+verified Ollama acceptance report are documented in
+[docs/discourse-local.md](docs/discourse-local.md). The B0–B3 harness and
+its external scenario manifest format are documented in
+[docs/ablation.md](docs/ablation.md).
