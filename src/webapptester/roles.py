@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import json
 import re
+from copy import deepcopy
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TypeVar
 
-from .providers import ModelOutputError, ModelProvider
+from .providers import ModelOutputError, ModelProvider, OllamaProvider
 from .schema import (
     ACTION_KINDS,
     Action,
@@ -70,12 +71,17 @@ def retry_parse(
     parse: Callable[[dict[str, object]], T],
     *,
     attempts: int = 2,
+    schema: dict[str, object] | None = None,
 ) -> T:
     """Call a provider a bounded number of times to repair malformed output."""
 
     for attempt in range(attempts):
         try:
-            return parse(provider.complete_json(system, user))
+            if schema is not None and isinstance(provider, OllamaProvider):
+                raw = provider.complete_json(system, user, schema=schema)
+            else:
+                raw = provider.complete_json(system, user)
+            return parse(raw)
         except (ValueError, KeyError, TypeError) as error:
             if attempt == attempts - 1:
                 raise ModelOutputError("invalid role output") from error
@@ -113,6 +119,9 @@ history. When a role/name matches more than one element, use a matching current
 snapshot ref so the controller can select the intended element. If multiple
 current snapshot controls share a role/name, a role locator is invalid: choose
 one exact ref from the current snapshot before the browser action.
+Prefer a role locator or current ref copied from the accessibility snapshot.
+Do not invent a CSS class from visible text (for example, ".Preferences" is
+not a valid locator merely because a Preferences link is visible).
 The ambiguous_controls input lists repeated current controls and their valid refs.
 Use that list to select a specific ref before proposing an action.
 If pending_form_input is present, fill that active textbox with its supplied
@@ -125,6 +134,55 @@ For drag, use source locator => destination locator. Do not return JavaScript, e
 arbitrary code, multiple actions, or prose. If the observation URL is about:blank or
 does not match the scenario URL, the next action MUST be goto with the scenario URL.
 The controller executes only the action object."""
+
+
+EXECUTOR_ACTION_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "action": {
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": ["goto", "click", "fill", "select", "scroll", "drag", "stop"],
+                },
+                "locator": {"type": "string"},
+                "value": {"type": "string"},
+                "checkpoint_id": {"type": "string"},
+            },
+            "required": ["kind", "locator", "value"],
+            "additionalProperties": False,
+        }
+    },
+    "required": ["action"],
+    "additionalProperties": False,
+}
+
+
+_INTERACTIVE_SNAPSHOT_REF = re.compile(
+    r'^\s*-\s*(?:button|link|textbox|searchbox|combobox|checkbox|radio|'
+    r'menuitem|option|tab|switch|spinbutton|slider|treeitem)\b.*?\[ref=(e\d+)\]',
+    re.IGNORECASE,
+)
+
+
+def _executor_action_schema(snapshot: str, scenario: Scenario) -> dict[str, object]:
+    """Constrain local-model action locators to current interactive refs.
+
+    Drag interactions need a two-part locator, so they retain the base schema.
+    Pages without AI refs also keep the existing CSS and role locator support.
+    """
+
+    refs = tuple(dict.fromkeys(
+        f"ref={match.group(1)}"
+        for line in snapshot.splitlines()
+        if (match := _INTERACTIVE_SNAPSHOT_REF.match(line)) is not None
+    ))
+    if not refs or "drag" in scenario.text.casefold():
+        return EXECUTOR_ACTION_SCHEMA
+    schema = deepcopy(EXECUTOR_ACTION_SCHEMA)
+    schema["properties"]["action"]["properties"]["locator"]["enum"] = ["", *refs]
+    return schema
 
 
 VERIFIER_SYSTEM = """You are the Verifier role in an evidence-gated Playwright tester.
@@ -170,6 +228,18 @@ class Planner:
                     raise ValueError("checkpoint required must be an explicit boolean")
                 if "scope" in item and not isinstance(item["scope"], str):
                     raise ValueError("checkpoint scope must be a string")
+            heading_checkpoint = _explicit_heading_checkpoint(scenario)
+            if heading_checkpoint is not None:
+                remaining: list[Checkpoint] = []
+                for item in raw_checkpoints:
+                    expected = item.get("expected", "")
+                    if isinstance(expected, str) and "heading" in expected.casefold():
+                        continue
+                    checkpoint = parse_checkpoints([item])[0]
+                    if checkpoint.source not in scenario.text:
+                        raise ValueError("checkpoint source is not an exact scenario quote")
+                    remaining.append(checkpoint)
+                return (heading_checkpoint, *remaining)
             required_scopes = location_scope_pair(scenario.text)
             if required_scopes:
                 return _decompose_location_checkpoints(scenario, raw_checkpoints)
@@ -196,6 +266,23 @@ class Planner:
             return checkpoints
 
         return retry_parse(self.provider, system, user, parse)
+
+
+def _explicit_heading_checkpoint(scenario: Scenario) -> Checkpoint | None:
+    """Ground a named visible heading in the main content of the final page."""
+
+    match = re.search(
+        r"\bverify\s+(?:the\s+)?(?P<target>[A-Za-z][A-Za-z0-9 _-]{0,80}?)"
+        r"\s+heading\s+is\s+visible\b",
+        scenario.text,
+        re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    target = match.group("target").strip()
+    return Checkpoint(
+        "heading", match.group(0), f"{target} heading is visible", True, "main", target
+    )
 
 
 def _decompose_location_checkpoints(
@@ -410,6 +497,7 @@ class Executor:
                 user,
                 parse,
                 attempts=3 if ambiguous_controls or pending_form_input or pending_form_submit else 2,
+                schema=_executor_action_schema(sanitized_snapshot, scenario),
             )
         except ModelOutputError as error:
             if str(error) != "invalid role output":

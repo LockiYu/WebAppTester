@@ -185,6 +185,19 @@ def test_old_scoped_presence_cannot_combine_with_new_observation() -> None:
     assert verdict.status == "UNKNOWN"
 
 
+def test_old_page_heading_evidence_without_explicit_target_is_stale() -> None:
+    checkpoint = Checkpoint(
+        "heading", "verify the Preferences heading is visible",
+        "Preferences heading is visible", True,
+    )
+    first = _observation(text="Preferences")
+    second = Observation("o-later", "https://example.test/photos", "Photos", "later.png", "later")
+    evidence = Evidence("heading", first.id, "Preferences", "SAT")
+
+    verdict = verdict_from_evidence((checkpoint,), (evidence,), (first, second))
+    assert verdict.status == "UNKNOWN"
+
+
 def test_scoped_evidence_must_match_checkpoint_region_scope() -> None:
     checkpoint = Checkpoint("dashboard", "appears on dashboard", "Course Test", True, "dashboard")
     observation = Observation(

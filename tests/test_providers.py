@@ -48,8 +48,27 @@ def test_ollama_sends_json_chat_request_and_tracks_usage() -> None:
     ]
     assert payload["stream"] is False
     assert payload["format"] == "json"
+    assert payload["think"] is False
     assert opened.call_args.kwargs == {"timeout": 120}
     assert provider.usage == TokenUsage(prompt=7, completion=3)
+
+
+def test_ollama_passes_explicit_json_schema_to_api() -> None:
+    response = _Response({
+        "message": {"content": '{"action": {"kind": "stop"}}'},
+        "prompt_eval_count": 0,
+        "eval_count": 0,
+    })
+    schema = {
+        "type": "object",
+        "properties": {"action": {"type": "object"}},
+        "required": ["action"],
+    }
+    with patch("urllib.request.urlopen", return_value=response) as opened:
+        OllamaProvider(model="local-model").complete_json("system", "user", schema=schema)
+
+    payload = json.loads(opened.call_args.args[0].data)
+    assert payload["format"] == schema
 
 
 def test_deepseek_sends_json_mode_and_bearer_key() -> None:

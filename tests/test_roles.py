@@ -1,5 +1,6 @@
 import pytest
 
+from webapptester.providers import OllamaProvider
 from webapptester.roles import Executor, GapRequest, ModelOutputError, Planner, Verifier, VerificationResult
 from webapptester.schema import Action, Checkpoint, Observation, ObservationRegion, Scenario
 
@@ -24,6 +25,50 @@ def _observation(text: str = "Project Alpha exists") -> Observation:
     return Observation("o1", "http://localhost", text, "shot.png", "fingerprint")
 
 
+def test_executor_uses_action_schema_for_ollama_only() -> None:
+    class SchemaProvider(OllamaProvider):
+        received_schema = None
+
+        def complete_json(self, system: str, user: str, *, schema=None):
+            self.received_schema = schema
+            return {"action": {"kind": "stop", "locator": "", "value": ""}}
+
+    provider = SchemaProvider("local-model")
+    action = Executor(provider).next_action(
+        _scenario(), (), _observation(), (),
+        accessibility_snapshot='- link "Add project" [ref=e42]',
+    )
+    assert action.kind == "stop"
+    assert provider.received_schema["required"] == ["action"]
+    assert provider.received_schema["properties"]["action"]["required"] == [
+        "kind", "locator", "value"
+    ]
+    assert provider.received_schema["properties"]["action"]["properties"]["locator"]["enum"] == [
+        "", "ref=e42"
+    ]
+
+
+def test_executor_schema_keeps_other_controls_needed_to_complete_task() -> None:
+    class SchemaProvider(OllamaProvider):
+        received_schema = None
+
+        def complete_json(self, system: str, user: str, *, schema=None):
+            self.received_schema = schema
+            return {"action": {"kind": "stop", "locator": "", "value": ""}}
+
+    provider = SchemaProvider("local-model")
+    scenario = Scenario("Open Preferences and verify the Preferences heading is visible", "http://localhost")
+    checkpoint = Checkpoint("heading", "verify the Preferences heading is visible", "Preferences heading is visible", True, "main", "Preferences")
+    snapshot = '- link " Preferences" [ref=e59]\n- button "Save" [ref=e178]'
+
+    Executor(provider).next_action(
+        scenario, (checkpoint,), _observation(), (), accessibility_snapshot=snapshot
+    )
+    assert provider.received_schema["properties"]["action"]["properties"]["locator"]["enum"] == [
+        "", "ref=e59", "ref=e178"
+    ]
+
+
 def test_planner_parses_checkpoint_and_retries_with_schema_correction() -> None:
     provider = FakeProvider(
         {"checkpoints": [{"id": "c1", "source": "wrong", "expected": "exists", "required": True}]},
@@ -42,6 +87,26 @@ def test_planner_parses_checkpoint_and_retries_with_schema_correction() -> None:
     assert len(checkpoints) == 1
     assert checkpoints[0].source in _scenario().text
     assert "Return corrected JSON only" in provider.calls[1][1]
+
+
+def test_planner_preserves_explicit_heading_assertion_scope_and_target() -> None:
+    scenario = Scenario(
+        "Open Preferences from the Admidio Administration menu and verify the Preferences heading is visible.",
+        "http://localhost",
+    )
+    provider = FakeProvider({"checkpoints": [{
+        "id": "c1",
+        "source": "Open Preferences from the Admidio Administration menu",
+        "expected": "Preferences heading is visible",
+        "required": True,
+        "scope": "page",
+    }]})
+
+    checkpoint, = Planner(provider).plan(scenario)
+    assert checkpoint.source == "verify the Preferences heading is visible"
+    assert checkpoint.target == "Preferences"
+    assert checkpoint.scope == "main"
+    assert checkpoint.expected == "Preferences heading is visible"
 
 
 def test_planner_retries_checkpoint_without_explicit_required_boolean() -> None:

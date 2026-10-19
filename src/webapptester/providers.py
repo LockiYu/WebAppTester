@@ -148,7 +148,9 @@ class OllamaProvider(_HTTPJSONProvider):
         self.model = model
         self.url = url
 
-    def complete_json(self, system: str, user: str) -> dict[str, object]:
+    def complete_json(
+        self, system: str, user: str, *, schema: dict[str, object] | None = None
+    ) -> dict[str, object]:
         payload: dict[str, object] = {
             "model": self.model,
             "messages": [
@@ -156,7 +158,8 @@ class OllamaProvider(_HTTPJSONProvider):
                 {"role": "user", "content": user},
             ],
             "stream": False,
-            "format": "json",
+            "think": False,
+            "format": schema if schema is not None else "json",
         }
         return self._complete(
             url=self.url,

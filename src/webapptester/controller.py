@@ -278,13 +278,13 @@ def _scoped_region(
 
 
 def _is_positive_presence(checkpoint: Checkpoint) -> bool:
-    """Whether a checkpoint asserts that a named target is currently present."""
+    """Whether a checkpoint asserts current visible presence."""
 
     target = getattr(checkpoint, "target", "")
     expected = getattr(checkpoint, "expected", "")
-    if not target or target.casefold() not in expected.casefold():
-        return False
     lowered = expected.casefold()
+    if not (target and target.casefold() in lowered) and "heading" not in lowered:
+        return False
     return bool(
         re.search(r"\b(?:visible|appears?|shown|exists?|listed|present)\b", lowered)
     ) and not bool(re.search(r"\b(?:not|absent|missing|hidden|removed)\b", lowered))
