@@ -16,6 +16,7 @@ from playwright.sync_api import sync_playwright
 
 from .ablation import AblationConfig, VARIANT_ORDER
 from .browser import BrowserGateway, MAX_STEPS
+from .deepseek_budget import DeepSeekBudget
 from .controller import Controller
 from .providers import DeepSeekProvider, ModelOutputError, OllamaProvider
 from .roles import Executor, Planner, Verifier
@@ -159,7 +160,12 @@ def run(args: argparse.Namespace) -> tuple[int, Path]:
     try:
         model = args.model or ("deepseek-flash" if args.provider == "deepseek" else "qwen2.5:3b")
         if args.provider == "deepseek":
-            provider = DeepSeekProvider(model=model)
+            provider = DeepSeekProvider(
+                model=model,
+                budget=DeepSeekBudget(
+                    Path(__file__).resolve().parents[2] / "runs" / "deepseek-budget.json"
+                ),
+            )
         else:
             provider = OllamaProvider(model=model)
     except (ValueError, OSError) as error:
@@ -240,6 +246,8 @@ def run(args: argparse.Namespace) -> tuple[int, Path]:
                     report_data["actions"].insert(
                         0, {"kind": "goto", "locator": "", "checkpoint_id": ""}
                     )
+                    report_data["provider"] = args.provider
+                    report_data["model"] = model
                     store.write_report(report_data)
             finally:
                 if context is not None:

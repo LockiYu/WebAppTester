@@ -31,9 +31,18 @@ repository's ignored demo runs:
   --model qwen2.5:3b
 ```
 
-The command executes the same manifest under each condition and writes one
-report per scenario plus `ablation-summary.json`. It does not invoke a paid
-provider. The API is also available through `AblationHarness` and
+The default command executes the same manifest under each condition using
+local Ollama and writes one report per scenario plus `ablation-summary.json`.
+It does not invoke a paid provider. When the formal scenarios are released,
+the required DeepSeek Flash model can be selected with
+`--provider deepseek --model deepseek-flash` after configuring
+`DEEPSEEK_API_KEY`. These runs share the private CNY 20 budget ledger described
+in the README; requests stop when a conservative reservation no longer fits.
+The current [DeepSeek pricing page](https://api-docs.deepseek.com/quick_start/pricing/)
+must be checked before paid evaluation. The ledger is an upper estimate, not
+an invoice; compare it with the provider's actual billing after each paid
+batch, and do not reset it to obtain more test budget. The API is also
+available through `AblationHarness` and
 `AblationConfig` in `webapptester.ablation` when an evaluator already has a
 runner or fixture manager.
 

@@ -9,6 +9,7 @@ from webapptester.providers import (
     OllamaProvider,
     TokenUsage,
 )
+from webapptester.deepseek_budget import DeepSeekBudget, DeepSeekBudgetError
 
 
 class _Response:
@@ -112,6 +113,41 @@ def test_deepseek_preserves_explicit_model_override() -> None:
     assert payload["model"] == "custom-model"
     assert payload["thinking"] == {"type": "disabled"}
     assert payload["max_tokens"] == 4096
+
+
+def test_deepseek_counts_billed_tokens_even_when_content_is_invalid() -> None:
+    response = _Response({
+        "choices": [{"message": {"content": "not json"}}],
+        "usage": {"prompt_tokens": 123, "completion_tokens": 45},
+    })
+    provider = DeepSeekProvider(api_key="secret")
+
+    with patch("urllib.request.urlopen", return_value=response):
+        with pytest.raises(ModelOutputError):
+            provider.complete_json("system", "user")
+
+    assert provider.usage == TokenUsage(prompt=123, completion=45)
+
+
+def test_deepseek_provider_uses_shared_budget_before_post(tmp_path) -> None:
+    response = _Response({
+        "choices": [{"message": {"content": '{"ok": true}'}}],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 10},
+    })
+    ledger = tmp_path / "deepseek-budget.json"
+    provider = DeepSeekProvider(api_key="secret", budget=DeepSeekBudget(ledger))
+    with patch("urllib.request.urlopen", return_value=response) as opened:
+        assert provider.complete_json("system", "user") == {"ok": True}
+    assert opened.call_count == 1
+    assert json.loads(ledger.read_text())["reserved_or_spent_cny"] == "0.01"
+
+    ledger.write_text(json.dumps({
+        "version": 1, "limit_cny": "20.00", "reserved_or_spent_cny": "20.00",
+    }), encoding="utf-8")
+    with patch("urllib.request.urlopen") as opened:
+        with pytest.raises(DeepSeekBudgetError):
+            provider.complete_json("system", "user")
+    opened.assert_not_called()
 
 
 def test_provider_rejects_empty_content_and_chains_cause() -> None:

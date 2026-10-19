@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -15,6 +16,7 @@ from webapptester.ablation import (
 from webapptester.controller import Controller, GapRequest, verdict_from_evidence
 from webapptester.schema import Action, Checkpoint, Evidence, Observation, Scenario
 from webapptester.results import load_run
+from webapptester.ablation_cli import run_manifest
 
 
 def test_variants_add_one_capability_at_a_time() -> None:
@@ -54,6 +56,54 @@ def test_manifest_resolves_private_auth_state_relative_to_manifest(tmp_path) -> 
     }]), encoding="utf-8")
 
     assert load_scenario_manifest(path)[0].storage_state == tmp_path / "auth.json"
+
+
+def test_ablation_passes_fixed_deepseek_model_to_each_condition(tmp_path, monkeypatch) -> None:
+    manifest = tmp_path / "scenarios.json"
+    manifest.write_text(json.dumps([{
+        "id": "s01", "scenario": "Open the page", "url": "http://example.test",
+    }]), encoding="utf-8")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    passed = []
+
+    def fake_run(args):
+        passed.append((args.provider, args.model, args.ablation_variant))
+        path = Path(args.output) / "report.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({
+            "verdict": {"status": "UNKNOWN", "reason": "test", "evidence": []},
+            "steps": 0,
+        }), encoding="utf-8")
+        return 2, path
+
+    monkeypatch.setattr("webapptester.ablation_cli.cli.run", fake_run)
+
+    summary_path = run_manifest(manifest, tmp_path / "out", provider="deepseek", variants=("B0", "B3"))
+
+    assert passed == [
+        ("deepseek", "deepseek-flash", "B0"),
+        ("deepseek", "deepseek-flash", "B3"),
+    ]
+    config = json.loads(summary_path.read_text())["run_config"]
+    assert config["provider"] == "deepseek"
+    assert config["model"] == "deepseek-flash"
+    assert len(config["manifest_sha256"]) == 64
+
+
+def test_deepseek_ablation_requires_key_and_fixed_model_before_any_case(
+    tmp_path, monkeypatch,
+) -> None:
+    manifest = tmp_path / "scenarios.json"
+    manifest.write_text(json.dumps([{
+        "id": "s01", "scenario": "Open the page", "url": "http://example.test",
+    }]), encoding="utf-8")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="key is unavailable"):
+        run_manifest(manifest, tmp_path / "out", provider="deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    with pytest.raises(ValueError, match="require deepseek-flash"):
+        run_manifest(manifest, tmp_path / "out", provider="deepseek", model="deepseek-v4-pro")
+    assert not (tmp_path / "out").exists()
 
 
 def test_harness_runs_each_case_and_keeps_unknown_runner_failures() -> None:

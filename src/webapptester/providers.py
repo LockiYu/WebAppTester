@@ -13,6 +13,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Protocol
 
+from .deepseek_budget import DeepSeekBudget
+
 
 DEEPSEEK_MAX_TOKENS = 4096
 
@@ -94,20 +96,22 @@ class _HTTPJSONProvider:
             with urllib.request.urlopen(request, timeout=120) as response:
                 raw_response = response.read()
             decoded = json.loads(raw_response)
+            # The API can bill a response whose model content fails our JSON
+            # contract. Count its reported usage before validating content.
+            prompt = _optional_nonnegative_int(_value_at(decoded, prompt_tokens_path))
+            completion = _optional_nonnegative_int(_value_at(decoded, completion_tokens_path))
+            self.usage.add(TokenUsage(prompt=prompt, completion=completion))
             content = _value_at(decoded, content_path)
             if not isinstance(content, str) or not content.strip():
                 raise ValueError("provider returned empty content")
             result = json.loads(content)
             if not isinstance(result, dict):
                 raise TypeError("provider content must decode to a JSON object")
-            prompt = _optional_nonnegative_int(_value_at(decoded, prompt_tokens_path))
-            completion = _optional_nonnegative_int(_value_at(decoded, completion_tokens_path))
         except ModelOutputError:
             raise
         except Exception as error:
             raise ModelOutputError("provider returned invalid JSON output") from error
 
-        self.usage.add(TokenUsage(prompt=prompt, completion=completion))
         return result
 
 
@@ -179,6 +183,7 @@ class DeepSeekProvider(_HTTPJSONProvider):
         api_key: str | None = None,
         model: str = "deepseek-flash",
         url: str = "https://api.deepseek.com/chat/completions",
+        budget: DeepSeekBudget | None = None,
     ) -> None:
         super().__init__()
         if not isinstance(model, str) or not model.strip():
@@ -191,6 +196,7 @@ class DeepSeekProvider(_HTTPJSONProvider):
         self.api_key = resolved_key
         self.model = model
         self.url = url
+        self.budget = budget
 
     def complete_json(self, system: str, user: str) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -204,16 +210,27 @@ class DeepSeekProvider(_HTTPJSONProvider):
             "thinking": {"type": "disabled"},
             "max_tokens": DEEPSEEK_MAX_TOKENS,
         }
-        return self._complete(
-            url=self.url,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.api_key}",
-            },
-            payload=payload,
-            content_path=("choices", 0, "message", "content"),
-            prompt_tokens_path=("usage", "prompt_tokens"),
-            completion_tokens_path=("usage", "completion_tokens"),
+        def request() -> dict[str, object]:
+            return self._complete(
+                url=self.url,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.api_key}",
+                },
+                payload=payload,
+                content_path=("choices", 0, "message", "content"),
+                prompt_tokens_path=("usage", "prompt_tokens"),
+                completion_tokens_path=("usage", "completion_tokens"),
+            )
+
+        if self.budget is None:
+            return request()
+        return self.budget.call(
+            model=self.model,
+            system=system,
+            user=user,
+            usage_counts=lambda: (self.usage.prompt, self.usage.completion),
+            request=request,
         )
 
 

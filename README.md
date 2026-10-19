@@ -48,6 +48,12 @@ DeepSeek is selectable with `--provider deepseek`; it uses
 disables thinking for structured JSON requests,
 caps each completion at 4096 tokens, and requires `DEEPSEEK_API_KEY` in the
 environment. No DeepSeek request is made without that key.
+The CLI and batch runner share an ignored `runs/deepseek-budget.json` ledger.
+For `deepseek-flash`, they reserve CNY 10 before each call and stop when the
+ledger cannot safely fit that call under the CNY 20 limit. Reported token usage
+replaces the reservation with a conservative estimate; missing usage or a
+crashed request keeps the full reservation. Recheck current prices before any
+paid evaluation because provider rates can change.
 See the [DeepSeek model and pricing documentation](https://api-docs.deepseek.com/quick_start/pricing/)
 before any paid evaluation; the repository does not contain an API key.
 

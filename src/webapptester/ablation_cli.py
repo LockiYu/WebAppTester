@@ -1,9 +1,11 @@
-"""Local-only command for running an external B0--B3 scenario manifest."""
+"""Run an external B0--B3 manifest with Ollama or budgeted DeepSeek Flash."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -18,11 +20,12 @@ from .ablation import (
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run an external scenario manifest under local B0-B3 conditions"
+        description="Run an external scenario manifest under B0-B3 conditions"
     )
     parser.add_argument("manifest", type=Path, help="JSON scenario manifest supplied by the evaluator")
     parser.add_argument("--output", type=Path, required=True, help="Output directory for ablation reports")
-    parser.add_argument("--model", default="qwen2.5:3b", help="Local Ollama model")
+    parser.add_argument("--provider", choices=("ollama", "deepseek"), default="ollama")
+    parser.add_argument("--model", help="Model; defaults to qwen2.5:3b or deepseek-flash")
     parser.add_argument("--variant", choices=VARIANT_ORDER, nargs="+", default=VARIANT_ORDER)
     return parser
 
@@ -31,10 +34,20 @@ def run_manifest(
     manifest: Path,
     output: Path,
     *,
-    model: str = "qwen2.5:3b",
+    model: str | None = None,
+    provider: str = "ollama",
     variants: tuple[str, ...] = VARIANT_ORDER,
 ) -> Path:
-    """Run each supplied case once for each selected local condition."""
+    """Run each supplied case once per condition with one selected provider."""
+
+    if provider not in {"ollama", "deepseek"}:
+        raise ValueError("unsupported ablation provider")
+    if provider == "deepseek":
+        if model not in {None, "deepseek-flash"}:
+            raise ValueError("formal DeepSeek runs require deepseek-flash")
+        if not os.environ.get("DEEPSEEK_API_KEY"):
+            raise ValueError("DeepSeek API key is unavailable")
+    selected_model = model or ("deepseek-flash" if provider == "deepseek" else "qwen2.5:3b")
 
     cases = load_scenario_manifest(manifest)
     output = Path(output)
@@ -44,8 +57,8 @@ def run_manifest(
         args = argparse.Namespace(
             scenario=case.scenario.text,
             url=case.scenario.url,
-            provider="ollama",
-            model=model,
+            provider=provider,
+            model=selected_model,
             output=report_dir,
             max_steps=case.scenario.max_steps,
             storage_state=case.storage_state,
@@ -66,13 +79,23 @@ def run_manifest(
         }
 
     outcomes = AblationHarness(runner).run(cases, variants)
-    return write_summary(output / "ablation-summary.json", outcomes)
+    return write_summary(
+        output / "ablation-summary.json", outcomes,
+        run_config={
+            "provider": provider,
+            "model": selected_model,
+            "manifest_sha256": hashlib.sha256(Path(manifest).read_bytes()).hexdigest(),
+        },
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        path = run_manifest(args.manifest, args.output, model=args.model, variants=tuple(args.variant))
+        path = run_manifest(
+            args.manifest, args.output, model=args.model,
+            provider=args.provider, variants=tuple(args.variant),
+        )
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
         print(f"UNKNOWN: ablation could not run ({type(error).__name__})", file=sys.stderr)
         return 2

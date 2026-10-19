@@ -262,7 +262,12 @@ def summarize(outcomes: Iterable[AblationOutcome]) -> dict[str, object]:
     return summary
 
 
-def write_summary(path: Path, outcomes: Iterable[AblationOutcome]) -> Path:
+def write_summary(
+    path: Path,
+    outcomes: Iterable[AblationOutcome],
+    *,
+    run_config: Mapping[str, str] | None = None,
+) -> Path:
     """Atomically write a JSON summary under a caller-selected output path."""
 
     destination = Path(path)
@@ -274,7 +279,10 @@ def write_summary(path: Path, outcomes: Iterable[AblationOutcome]) -> Path:
             prefix=f".{destination.name}.", suffix=".tmp", delete=False,
         ) as handle:
             temporary = Path(handle.name)
-            json.dump(summarize(outcomes), handle, ensure_ascii=False, indent=2)
+            summary = summarize(outcomes)
+            if run_config is not None:
+                summary["run_config"] = dict(run_config)
+            json.dump(summary, handle, ensure_ascii=False, indent=2)
             handle.write("\n")
         temporary.replace(destination)
     finally:
