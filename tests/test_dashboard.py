@@ -125,7 +125,7 @@ def test_dashboard_history_and_selected_run_show_evidence_and_artifacts(
     history_text = str(at.dataframe[0].value)
     assert "PASS" in history_text
     assert "FAIL" in history_text
-    assert all("source unknown" in source for source in at.dataframe[0].value["Source"].tolist())
+    assert all("来源未知" in source for source in at.dataframe[0].value["来源"].tolist())
 
     at.selectbox[0].set_value(1).run()
 
@@ -141,15 +141,15 @@ def test_dashboard_history_and_selected_run_show_evidence_and_artifacts(
     assert at.exception == []
     assert "PASS" in text
     assert "all required checkpoints have supported SAT evidence" in text
-    assert "Steps" in text
-    assert "Prompt tokens" in text
-    assert "Completion tokens" in text
+    assert "操作步数" in text
+    assert "输入 Token" in text
+    assert "输出 Token" in text
     assert "o1" in text
     assert "project dashboard" in text
-    assert "may contain sensitive page content" in text
-    assert "Unavailable" in text or "unavailable" in text
-    assert any(button.label == "Download report.json" for button in at.download_button)
-    assert any(button.label == "Download events.jsonl" for button in at.download_button)
+    assert "可能包含敏感内容" in text
+    assert "不可用" in text
+    assert any(button.label == "下载 report.json" for button in at.download_button)
+    assert any(button.label == "下载 events.jsonl" for button in at.download_button)
     selected = next(run for run in list_runs(runs) if run.status == "PASS")
     report_export = _report_export(runs, selected) or b""
     events_export = _events_export(runs, selected) or b""
@@ -159,8 +159,8 @@ def test_dashboard_history_and_selected_run_show_evidence_and_artifacts(
 
     at.selectbox[0].set_value(0).run()
     at.checkbox[0].set_value(True).run()
-    assert not any(button.label == "Download trace.zip" for button in at.download_button)
-    assert any("session secrets" in item.value for item in at.info)
+    assert not any(button.label == "下载 trace.zip" for button in at.download_button)
+    assert any("会话凭据" in item.value for item in at.info)
 
     trace_run = next(run for run in list_runs(runs) if run.status == "FAIL")
     outside_trace = tmp_path / "outside.trace.zip"
@@ -170,7 +170,7 @@ def test_dashboard_history_and_selected_run_show_evidence_and_artifacts(
     trace_run.trace.symlink_to(outside_trace)
     at.selectbox[0].set_value(1).run()
     at.checkbox[0].set_value(True).run()
-    assert any("trace.zip unavailable" in item.value for item in at.warning)
+    assert any("trace.zip 不可用" in item.value for item in at.warning)
 
 
 def test_dashboard_empty_root_is_readable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -179,7 +179,7 @@ def test_dashboard_empty_root_is_readable(tmp_path: Path, monkeypatch: pytest.Mo
     at = _dashboard_app(tmp_path, monkeypatch).run(timeout=20)
 
     assert at.exception == []
-    assert any("No valid runs found" in item.value for item in at.info)
+    assert any("没有找到可查看的运行记录" in item.value for item in at.info)
 
 
 def test_dashboard_hides_page_derived_fields_and_downloads_until_reveal(
@@ -214,7 +214,7 @@ def test_dashboard_marks_unhashable_observation_unavailable_without_crashing(
     at = _dashboard_app(tmp_path, monkeypatch).run(timeout=20)
 
     assert at.exception == []
-    assert "UNAVAILABLE" in str(at.dataframe[0].value["Status"].tolist())
+    assert "UNAVAILABLE" in str(at.dataframe[0].value["状态"].tolist())
     assert at.checkbox == []
 
 
@@ -278,7 +278,7 @@ def test_dashboard_exports_drop_cookie_fields_and_never_offer_trace_download(
 
     at = _dashboard_app(tmp_path, monkeypatch).run(timeout=20)
     at.checkbox[0].set_value(True).run()
-    assert not any(button.label == "Download trace.zip" for button in at.download_button)
+    assert not any(button.label == "下载 trace.zip" for button in at.download_button)
 
 
 def test_report_export_preserves_scoped_contract_metadata(tmp_path: Path) -> None:

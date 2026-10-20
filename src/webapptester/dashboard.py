@@ -15,7 +15,7 @@ from webapptester.results import RunRecord, artifact_path, list_runs
 def _source_label(run: RunRecord) -> str:
     """Describe source metadata without guessing at a provider or model."""
 
-    return "source unknown · provider metadata unavailable"
+    return "来源未知 · 缺少模型提供方信息"
 
 
 def _history_label(run: RunRecord) -> str:
@@ -194,13 +194,13 @@ def _safe_event(raw: object) -> dict[str, Any] | None:
 
 
 def _artifact_warning(label: str) -> None:
-    st.warning(f"{label} unavailable for this run.")
+    st.warning(f"本次运行的 {label} 不可用。")
 
 
 def _render_downloads(root: Path, run: RunRecord, *, reveal_raw: bool) -> None:
     if not reveal_raw:
         return
-    st.subheader("Downloads")
+    st.subheader("下载文件")
     columns = st.columns(2)
     download_specs = (
         ("report.json", "application/json", _report_export),
@@ -213,7 +213,7 @@ def _render_downloads(root: Path, run: RunRecord, *, reveal_raw: bool) -> None:
                 _artifact_warning(name)
             else:
                 st.download_button(
-                    f"Download {name}",
+                    f"下载 {name}",
                     data=data,
                     file_name=name,
                     mime=mime,
@@ -225,16 +225,15 @@ def _render_downloads(root: Path, run: RunRecord, *, reveal_raw: bool) -> None:
         _artifact_warning("trace.zip")
     else:
         st.info(
-            "The local Playwright trace may contain session secrets, including "
-            "cookies. It is never available as a dashboard download; inspect "
-            f"the local file manually at `{trace}`."
+            "本地 Playwright Trace 可能包含 Cookie 等会话凭据，因此看板不提供下载。"
+            f"如需查看，请在本机打开 `{trace}`。"
         )
 
 
 def _render_evidence(run: RunRecord) -> None:
-    st.subheader("Checkpoint evidence")
+    st.subheader("检查点证据")
     if not run.evidence:
-        st.info("No checkpoint evidence was recorded.")
+        st.info("本次运行没有记录检查点证据。")
         return
     observation_by_id = {
         observation.get("id"): observation for observation in run.observations
@@ -243,110 +242,110 @@ def _render_evidence(run: RunRecord) -> None:
         status = item["status"]
         checkpoint = item["checkpoint_id"]
         with st.expander(f"{checkpoint} · {status}"):
-            st.write(f"Observation ID: {item['observation_id']}")
-            st.write(f"Quote: {item['quote']}")
+            st.write(f"观察记录 ID：{item['observation_id']}")
+            st.write(f"证据原文：{item['quote']}")
             observation = observation_by_id.get(item["observation_id"])
             if observation is None:
-                st.warning("Source observation unavailable.")
+                st.warning("对应的观察记录不可用。")
 
 
 def _render_actions(run: RunRecord) -> None:
-    st.subheader("Action timeline")
+    st.subheader("操作时间线")
     if not run.actions:
-        st.info("No actions were recorded.")
+        st.info("本次运行没有记录操作。")
         return
     for index, action in enumerate(run.actions, start=1):
-        kind = action.get("kind", "unknown")
+        kind = action.get("kind", "未知")
         locator = action.get("locator", "")
         checkpoint = action.get("checkpoint_id", "")
-        suffix = f" · checkpoint {checkpoint}" if checkpoint else ""
+        suffix = f" · 检查点 {checkpoint}" if checkpoint else ""
         st.markdown(f"**{index}. {kind}** · `{locator}`{suffix}")
 
 
 def _render_screenshots(root: Path, run: RunRecord) -> None:
-    st.subheader("Screenshots")
+    st.subheader("截图")
     if not run.observations:
-        st.info("No observations were recorded.")
+        st.info("本次运行没有记录页面观察结果。")
         return
     for observation in run.observations:
-        observation_id = observation.get("id", "unknown")
+        observation_id = observation.get("id", "未知")
         screenshot_text = observation.get("screenshot")
         if not isinstance(screenshot_text, str):
-            st.warning(f"Screenshot for {observation_id} unavailable.")
+            st.warning(f"观察记录 {observation_id} 的截图不可用。")
             continue
         screenshot = artifact_path(root, run, screenshot_text)
         if screenshot is None:
-            st.warning(f"Screenshot for {observation_id} unavailable.")
+            st.warning(f"观察记录 {observation_id} 的截图不可用。")
             continue
         try:
-            st.image(str(screenshot), caption=f"Observation {observation_id}")
+            st.image(str(screenshot), caption=f"观察记录 {observation_id}")
         except (OSError, RuntimeError, ValueError):
-            st.warning(f"Screenshot for {observation_id} unavailable.")
+            st.warning(f"观察记录 {observation_id} 的截图不可用。")
 
 
 def _render_selected_run(root: Path, run: RunRecord) -> None:
-    st.subheader(f"Run: {run.directory.name}")
+    st.subheader(f"运行记录：{run.directory.name}")
     metrics = st.columns(5)
     with metrics[0]:
-        st.metric("Status", run.status)
+        st.metric("状态", run.status)
     with metrics[1]:
-        st.metric("Steps", run.steps)
+        st.metric("操作步数", run.steps)
     with metrics[2]:
-        st.metric("Elapsed seconds", f"{run.elapsed_seconds:.2f}")
+        st.metric("耗时（秒）", f"{run.elapsed_seconds:.2f}")
     with metrics[3]:
-        st.metric("Prompt tokens", run.token_usage.get("prompt", 0))
+        st.metric("输入 Token", run.token_usage.get("prompt", 0))
     with metrics[4]:
-        st.metric("Completion tokens", run.token_usage.get("completion", 0))
-    st.caption(f"Source: {_source_label(run)}")
+        st.metric("输出 Token", run.token_usage.get("completion", 0))
+    st.caption(f"来源：{_source_label(run)}")
     if run.status == "UNAVAILABLE":
-        st.warning("This run is unavailable because its persisted report is corrupt or incomplete.")
+        st.warning("本次运行的报告已损坏或不完整，无法查看详情。")
         return
     reveal_raw = st.checkbox(
-        "Reveal page-derived evidence and downloads",
-        help="Page text, URLs, screenshots, action locators, evidence quotes, and traces may contain sensitive data.",
+        "显示页面证据和下载文件",
+        help="页面文字、URL、截图、操作定位信息、证据原文和 Trace 可能包含敏感数据。",
         key=f"reveal-{run.directory}",
     )
     if reveal_raw:
         st.warning(
-            "Page-derived evidence and downloads may contain sensitive page content."
+            "页面证据和下载文件可能包含敏感内容。"
         )
-        st.write(f"Reason: {run.reason}")
+        st.write(f"判定原因：{run.reason}")
         _render_evidence(run)
         _render_actions(run)
         _render_screenshots(root, run)
         _render_downloads(root, run, reveal_raw=True)
     else:
-        st.info("Page-derived evidence and downloads are hidden until you reveal them.")
+        st.info("页面证据和下载文件已隐藏；勾选上方选项后查看。")
 
 
 def render(root: Path) -> None:
     """Render the read-only results dashboard for *root*."""
 
     root = Path(root)
-    st.set_page_config(page_title="WebAppTester results", page_icon="🧪", layout="wide")
-    st.title("WebAppTester results")
-    st.caption(f"Read-only run history · runs root: {root}")
+    st.set_page_config(page_title="WebAppTester 测试结果", page_icon="🧪", layout="wide")
+    st.title("WebAppTester 测试结果")
+    st.caption(f"只读运行记录 · 结果目录：{root}")
     runs = list_runs(root)
     if not runs:
-        st.info("No valid runs found in the configured runs root.")
+        st.info("结果目录中没有找到可查看的运行记录。")
         return
 
-    st.subheader("Run history")
+    st.subheader("运行历史")
     history_rows: list[dict[str, Any]] = [
         {
-            "Run": run.directory.name,
-            "Status": run.status,
-            "Source": _source_label(run),
-            "Steps": run.steps,
-            "Elapsed seconds": round(run.elapsed_seconds, 2),
-            "Prompt tokens": run.token_usage.get("prompt", 0),
-            "Completion tokens": run.token_usage.get("completion", 0),
+            "运行记录": run.directory.name,
+            "状态": run.status,
+            "来源": _source_label(run),
+            "操作步数": run.steps,
+            "耗时（秒）": round(run.elapsed_seconds, 2),
+            "输入 Token": run.token_usage.get("prompt", 0),
+            "输出 Token": run.token_usage.get("completion", 0),
         }
         for run in runs
     ]
     st.dataframe(history_rows, width="stretch", hide_index=True)
     selected_index = st.selectbox(
-        "Select a run",
+        "选择运行记录",
         options=list(range(len(runs))),
         format_func=lambda index: _history_label(runs[index]),
     )
