@@ -122,9 +122,8 @@ def test_dashboard_history_and_selected_run_show_evidence_and_artifacts(
     at = _dashboard_app(tmp_path, monkeypatch).run(timeout=20)
 
     assert at.exception == []
-    history_text = str(at.dataframe[0].value)
-    assert "PASS" in history_text
-    assert "FAIL" in history_text
+    history = at.dataframe[0].value
+    assert set(history["状态"].tolist()) == {"PASS", "FAIL"}
     assert all("来源未知" in source for source in at.dataframe[0].value["来源"].tolist())
 
     at.selectbox[0].set_value(1).run()
@@ -180,6 +179,62 @@ def test_dashboard_empty_root_is_readable(tmp_path: Path, monkeypatch: pytest.Mo
 
     assert at.exception == []
     assert any("没有找到可查看的运行记录" in item.value for item in at.info)
+
+
+def test_dashboard_compares_same_scenario_and_explains_its_goal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    experiment = tmp_path / "runs" / "cross-app-pilot" / "batch-1"
+    experiment.mkdir(parents=True)
+    scenario = "Open the dashboard and verify the project appears."
+    (experiment / "manifest.json").write_text(
+        json.dumps([{
+            "id": "4gaboards-project",
+            "scenario": scenario,
+            "url": "https://example.test",
+            "storage_state": "secret-auth.json",
+        }]),
+        encoding="utf-8",
+    )
+    results = experiment / "results"
+    results.mkdir()
+    (results / "ablation-summary.json").write_text(
+        json.dumps({"outcomes": [
+            {"scenario_id": "4gaboards-project", "variant": "B0"},
+            {"scenario_id": "4gaboards-project", "variant": "B1"},
+        ]}),
+        encoding="utf-8",
+    )
+    for variant, steps in (("B0", 3), ("B1", 2)):
+        run = _write_run(
+            results / variant / "4gaboards-project", "attempt-1",
+            status="PASS", reason="supported evidence", steps=steps,
+        )
+        report_path = run / "report.json"
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        report["checkpoints"] = [{
+            "id": "c1", "source": "verify the project appears",
+            "expected": "project dashboard visible", "required": True,
+            "scope": "page", "target": "project dashboard",
+        }]
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    at = _dashboard_app(tmp_path, monkeypatch).run(timeout=20)
+
+    assert at.exception == []
+    case_table, comparison_table, history_table = (item.value for item in at.dataframe)
+    assert "在目标页面确认「project dashboard」" in case_table.iloc[0]["在测什么（中文）"]
+    assert case_table.iloc[0]["B0"] == "PASS"
+    assert case_table.iloc[0]["B1"] == "PASS"
+    assert comparison_table["操作步数"].tolist()[:2] == [3, 2]
+    assert "4gaboards-project" in history_table["案例"].tolist()
+    assert [(metric.label, metric.value) for metric in at.metric[:2]] == [
+        ("B0", "PASS"), ("B1", "PASS")
+    ]
+    assert len(at.get("vega_lite_chart")) == 1
+    visible = "\n".join(item.value for item in (*at.markdown, *at.caption, *at.info))
+    assert scenario in visible
+    assert "secret-auth.json" not in visible
 
 
 def test_dashboard_hides_page_derived_fields_and_downloads_until_reveal(
