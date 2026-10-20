@@ -256,6 +256,32 @@ def test_dashboard_hides_page_derived_fields_and_downloads_until_reveal(
     assert at.download_button == []
 
 
+def test_dashboard_compares_first_and_last_observation_after_reveal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = tmp_path / "runs"
+    run = _write_run(runs, "before-after", status="PASS", reason="ok")
+    report_path = run / "report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["observations"].append({
+        "id": "o2", "url": "https://example.test/after", "text": "project dashboard",
+        "screenshot": "screenshots/observation-0002.png", "fingerprint": "def",
+    })
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    (run / "screenshots" / "observation-0002.png").write_bytes(_PNG)
+
+    at = _dashboard_app(tmp_path, monkeypatch).run(timeout=20)
+    before_reveal = "\n".join(item.value for item in at.markdown)
+    assert "执行前" not in before_reveal
+
+    at.checkbox[0].set_value(True).run()
+
+    assert at.exception == []
+    visible = "\n".join(item.value for item in at.markdown)
+    assert "执行前" in visible
+    assert "执行后" in visible
+
+
 def test_dashboard_marks_unhashable_observation_unavailable_without_crashing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

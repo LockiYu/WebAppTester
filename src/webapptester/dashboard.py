@@ -484,24 +484,42 @@ def _render_actions(run: RunRecord) -> None:
 
 
 def _render_screenshots(root: Path, run: RunRecord) -> None:
-    st.subheader("截图")
+    st.subheader("执行前后页面对比")
     if not run.observations:
         st.info("本次运行没有记录页面观察结果。")
         return
+    if len(run.observations) < 2:
+        st.info("本次运行只有一次页面观察，无法形成前后截图对比。")
+    else:
+        for column, label, observation in zip(
+            st.columns(2),
+            ("执行前", "执行后"),
+            (run.observations[0], run.observations[-1]),
+        ):
+            with column:
+                st.markdown(f"**{label}**")
+                _render_observation_screenshot(root, run, observation)
+    st.subheader("全部观察截图")
     for observation in run.observations:
-        observation_id = observation.get("id", "未知")
-        screenshot_text = observation.get("screenshot")
-        if not isinstance(screenshot_text, str):
-            st.warning(f"观察记录 {observation_id} 的截图不可用。")
-            continue
-        screenshot = artifact_path(root, run, screenshot_text)
-        if screenshot is None:
-            st.warning(f"观察记录 {observation_id} 的截图不可用。")
-            continue
-        try:
-            st.image(str(screenshot), caption=f"观察记录 {observation_id}")
-        except (OSError, RuntimeError, ValueError):
-            st.warning(f"观察记录 {observation_id} 的截图不可用。")
+        _render_observation_screenshot(root, run, observation)
+
+
+def _render_observation_screenshot(
+    root: Path, run: RunRecord, observation: dict[str, object]
+) -> None:
+    observation_id = observation.get("id", "未知")
+    screenshot_text = observation.get("screenshot")
+    if not isinstance(screenshot_text, str):
+        st.warning(f"观察记录 {observation_id} 的截图不可用。")
+        return
+    screenshot = artifact_path(root, run, screenshot_text)
+    if screenshot is None:
+        st.warning(f"观察记录 {observation_id} 的截图不可用。")
+        return
+    try:
+        st.image(str(screenshot), caption=f"观察记录 {observation_id}")
+    except (OSError, RuntimeError, ValueError):
+        st.warning(f"观察记录 {observation_id} 的截图不可用。")
 
 
 def _render_selected_run(
