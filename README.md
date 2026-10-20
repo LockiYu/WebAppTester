@@ -1,11 +1,8 @@
 # WebAppTester
 
-WebAppTester runs a bounded Playwright browser scenario through Planner,
-Executor, and Verifier roles. Every observation includes visible text and a
-screenshot; the final report is PASS, FAIL, or UNKNOWN and keeps evidence
-grounded in those observations.
+WebAppTester 通过 Planner、Executor 和 Verifier 三个角色执行有步数上限的 Playwright 浏览器测试。每次页面观察都保存可见文本和截图；最终报告给出 PASS、FAIL 或 UNKNOWN，并引用实际观察作为证据。
 
-## Local demo
+## 本地演示
 
 ```sh
 python3 -m venv .venv
@@ -14,7 +11,7 @@ python3 -m venv .venv
 .venv/bin/python demo/app.py --port 8765
 ```
 
-In another terminal, start Ollama and fetch the concrete local model:
+在另一个终端中，启动 Ollama 并获取具体的本地模型：
 
 ```sh
 ollama serve
@@ -22,86 +19,54 @@ ollama pull qwen2.5:3b
 .venv/bin/webapptester --scenario 'Create project Alpha and verify it appears on dashboard and sidebar' --url http://127.0.0.1:8765 --provider ollama --model qwen2.5:3b --output runs/demo
 ```
 
-The CLI creates a unique UTC timestamped child under the supplied output base
-(`runs/demo/<timestamp>/`) and writes `report.json`, append-only `events.jsonl`,
-PNG observations under `screenshots/`, and `trace.zip`. It exits 0 for PASS, 1 for
-FAIL, and 2 for UNKNOWN. The runner tries managed full Chromium, the managed
-default browser, then an installed Google Chrome channel. Install the managed
-browser before running the local acceptance test.
+CLI 会在指定输出目录下创建带唯一 UTC 时间戳的子目录（`runs/demo/<timestamp>/`），并写入 `report.json`、追加记录的 `events.jsonl`、`screenshots/` 中的 PNG 截图以及 `trace.zip`。PASS、FAIL、UNKNOWN 的退出码分别为 0、1、2。运行器依次尝试 Playwright 安装的完整版 Chromium、默认浏览器，以及已安装的 Google Chrome。运行本地验收测试前，请先安装 Playwright 浏览器。
 
-To run two scenarios sequentially and export one summary, use the included
-batch configuration:
+若要顺序运行两个场景并导出一个摘要，请使用包含的批处理配置：
 
 ```sh
 .venv/bin/webapptester-batch examples/demo-batch.json --output runs/batch
 ```
 
-Each item keeps its own run artifacts under one timestamped batch directory.
-The directory contains `batch-summary.json` and `batch-summary.csv`; the
-structured summaries include scenario metadata, status, report path, step
-count, and reason without action input values. The batch command exits 0 only
-when every item passes, 1 when at least one item fails, and 2 when no item
-fails but at least one item is unknown.
+每个场景都在带时间戳的批量运行目录中保留自己的产物。该目录包含 `batch-summary.json` 和 `batch-summary.csv`；汇总记录场景元数据、状态、报告路径、步数和原因，不包含操作输入值。全部场景通过时退出码为 0，任一场景失败时为 1，没有失败但至少一个场景无法判定时为 2。
 
-DeepSeek is selectable with `--provider deepseek`; it uses
-`deepseek-flash` by default (the current API name for DeepSeek-V4.1-Flash),
-disables thinking for structured JSON requests,
-caps each completion at 4096 tokens, and requires `DEEPSEEK_API_KEY` in the
-environment. No DeepSeek request is made without that key.
-The CLI and batch runner share an ignored `runs/deepseek-budget.json` ledger.
-For `deepseek-flash`, they reserve CNY 10 before each call and stop when the
-ledger cannot safely fit that call under the CNY 20 limit. Reported token usage
-replaces the reservation with a conservative estimate; missing usage or a
-crashed request keeps the full reservation. Recheck current prices before any
-paid evaluation because provider rates can change.
-See the [DeepSeek model and pricing documentation](https://api-docs.deepseek.com/quick_start/pricing/)
-before any paid evaluation; the repository does not contain an API key.
+可通过 `--provider deepseek` 选择 DeepSeek；默认模型为 `deepseek-flash`，代码将其用于 DeepSeek-V4.1-Flash。结构化 JSON 请求会关闭思考模式，单次回复最多 4096 Token。运行前须在本地环境中配置 `DEEPSEEK_API_KEY`；没有密钥就不会发送 DeepSeek 请求。CLI 和批量运行器共用被 Git 忽略的 `runs/deepseek-budget.json` 预算台账。每次调用 `deepseek-flash` 前预留人民币 10 元；预留后可能超过人民币 20 元上限时停止。收到 Token 用量后，以保守估算替换预留额；缺少用量或请求异常中断时，保留全部预留额。
 
-To inspect the newest trace locally during development:
+付费评测前应重新核对 [DeepSeek 模型与价格文档](https://api-docs.deepseek.com/quick_start/pricing/)；服务价格可能变化，仓库也不包含 API 密钥。
+
+要在开发期间本地检查最新的追踪：
 
 ```sh
 .venv/bin/playwright show-trace "$(ls -td runs/demo/*/trace.zip | head -1)"
 ```
 
-Playwright traces are local developer artifacts and may contain session secrets,
-including cookies. The dashboard never offers a trace download; use the local
-path from the selected run's report when manual inspection is necessary.
+Playwright Trace 是本地开发产物，可能包含会话 Cookie 等敏感信息。结果看板不提供 Trace 下载；如需检查，请使用所选报告中的本地路径。
 
-## Isolated 4gaBoards fixture
+## 隔离的 4gaBoards 测试环境
 
-The integration fixture runs 4gaBoards 3.2.16 and PostgreSQL on
-`127.0.0.1:3001`. It uses a separate Compose project and named volumes, so the
-existing instance on port 3000 and its data are left unchanged.
+集成测试环境在 `127.0.0.1:3001` 上运行 4gaBoards 3.2.16 和 PostgreSQL。它使用单独的 Compose 项目和命名卷，因此端口 3000 上的现有实例及其数据保持不变。
 
-Create the private first-run credentials once:
+一次性创建私有首次运行凭据：
 
 ```sh
 .venv/bin/python scripts/setup_4gaboards_local.py
 ```
 
-The command creates `runs/4gaboards-local/instance.env` with mode `0600` and
-prints the next Docker command without printing any credential values. Start
-the fixture with the printed command, or run:
+该命令会创建 `runs/4gaboards-local/instance.env`（模式为 `0600`），并打印下一个 Docker 命令，但不打印任何凭据值。使用打印的命令启动测试环境，或运行：
 
 ```sh
 docker compose --env-file runs/4gaboards-local/instance.env \
   -p webapptester-4ga -f examples/4gaboards/compose.yaml up -d
 ```
 
-The generated env file and Docker volumes are local-only. Keep the env file
-private and do not commit it.
+生成的环境文件和 Docker 卷仅供本地使用。请勿提交环境文件。
 
-After the fixture is healthy, create a private browser login state in a
-separate Playwright context:
+测试环境健康后，在单独的 Playwright 上下文中创建私有浏览器登录状态：
 
 ```sh
 .venv/bin/python scripts/bootstrap_4gaboards_auth.py
 ```
 
-The command reads the local first-run credentials without printing them,
-confirms the authenticated dashboard, and writes
-`runs/4gaboards-local/auth.json` with mode `0600`. Use that state for a single
-scenario with `--storage-state`:
+该命令会读取本地首次运行凭据但不打印它们，确认已认证的仪表板，并写入 `runs/4gaboards-local/auth.json`（模式为 `0600`）。使用此状态配合 `--storage-state` 运行单个场景：
 
 ```sh
 .venv/bin/webapptester \
@@ -111,9 +76,7 @@ scenario with `--storage-state`:
   --output runs/4gaboards-local/scenarios
 ```
 
-Batch items may also include a local `storage_state` path. The state is loaded
-into each new browser context and is never copied into reports, events, or
-batch summaries:
+批次项目还可以包含本地 `storage_state` 路径。状态被加载到每个新的浏览器上下文中，且永远不会被复制到报告、事件或批次摘要中：
 
 ```json
 [
@@ -125,38 +88,24 @@ batch summaries:
 ]
 ```
 
-The 4gaBoards scenario manifest is at
-`examples/4gaboards/scenarios.json`. It contains the one supplied course
-example for `Course Test` and two clearly labelled local read-only smoke
-scenarios. Every item targets the isolated port and references the ignored
-`runs/4gaboards-local/auth.json` state file. Run the supplied course example
-once only; use a fresh fixture or a unique local name for later creation
-checks.
+4gaBoards 场景清单位于 `examples/4gaboards/scenarios.json`，包含一个名为 `Course Test` 的课程示例，以及两个明确标记的本地只读冒烟场景。每个场景都连接隔离端口，并引用被 Git 忽略的 `runs/4gaboards-local/auth.json`。课程示例只运行一次；后续创建检查请使用全新的测试环境或唯一项目名。
 
-The deterministic creation check is opt-in because it creates one uniquely
-named local project and records raw evidence:
+确定性创建检查是可选参与的，因为它会创建一个唯一命名的本地项目并记录原始证据：
 
 ```sh
 WEBAPPTESTER_4GA_SMOKE=1 \
   .venv/bin/python -m pytest tests/test_4gaboards_smoke.py -q
 ```
 
-It writes a report, PNG observations under
-`runs/4gaboards-local/deterministic-smoke/screenshots/`, and a Playwright
-`trace.zip` in that ignored directory. The check uses at most 12 browser
-actions and asserts the new project independently in the dashboard list and
-sidebar.
+它会在
+`runs/4gaboards-local/deterministic-smoke/screenshots/` 下写入报告、PNG 观察结果以及 Playwright
+`trace.zip`（均位于该被忽略的目录中）。该检查最多使用 12 次浏览器操作，并在仪表板列表和侧边栏中独立断言新项目。
 
-A local Ollama end-to-end acceptance run on 2026-10-16 also created a fresh
-project from the natural-language scenario and returned `PASS` in five browser
-actions. Its two SAT checkpoint items cite the same final observation but
-different nonoverlapping dashboard and sidebar regions on the start page. The
-ignored local report is under
-`runs/4gaboards-local/runtime-acceptance-after-audit/20261016T102519799424Z/`.
-This is one demonstrated scenario, not a score for the course's full suite.
+2026-10-16 在本地 Ollama 端到端验收运行中也根据自然语言场景创建了一个新项目，并在五次浏览器操作中返回了 `PASS`。其两个 SAT 检查点项目引用相同的最终观察结果，但在起始页面上引用不同的、不重叠的仪表板和侧边栏区域。被忽略的本地报告位于
+`runs/4gaboards-local/runtime-acceptance-after-audit/20261016T102519799424Z/`。
+这只是单场景验收结果，不代表课程完整场景集的成绩。
 
-To run the supplied model scenario once after the deterministic check, keep
-the private storage state local and inspect the persisted report path:
+在确定性检查之后运行一次提供的模型场景时，请保持私有存储状态为本地，并检查持久化的报告路径：
 
 ```sh
 PYTHONPATH=src .venv/bin/webapptester \
@@ -167,53 +116,33 @@ PYTHONPATH=src .venv/bin/webapptester \
   --output runs/4gaboards-local/course-test
 ```
 
-Keep the model's PASS, FAIL, or UNKNOWN result as reported. A model planning
-or provider failure is an UNKNOWN execution result and does not establish a
-4gaBoards failure. Do not repeat `Course Test` creation against the same
-fixture. The current local fixture already contains `Course Test` from a
-diagnostic run whose report stayed `UNKNOWN` after malformed Ollama verifier
-output. Use a fresh isolated fixture before rerunning that exact creation
-scenario; the successful unique-name acceptance above has its own PASS report.
+保留模型报告的 PASS、FAIL 或 UNKNOWN 结果。模型规划或提供者失败属于 UNKNOWN 执行结果，并不构成 4gaBoards 失败。不要针对同一测试环境重复 `Course Test` 创建。当前本地测试环境已包含来自诊断运行的 `Course Test`，其报告在畸形 Ollama 验证器输出后保持为 `UNKNOWN`。重新运行该确切创建场景前，请使用新的隔离测试环境；上述成功的唯一名称验收拥有自己的 PASS 报告。
 
-Run the tests with:
+使用以下命令运行测试：
 
 ```sh
 .venv/bin/python -m pytest -q
 ```
 
-## B0-B3 ablation harness
+## B0–B3 消融实验
 
-The formal 36-scenario set is not included in this repository. When it is
-released, supply it as a private manifest and run the local-only comparison
-described in [docs/ablation.md](docs/ablation.md). The harness keeps the four
-conditions and writes per-scenario outcomes and metrics without claiming a
-score before the scenarios are actually executed.
+正式的 36 个场景集未包含在此仓库中。发布时请将其作为私有清单提供，并运行 [docs/ablation.md](docs/ablation.md) 中描述的仅限本地的比较。该框架保留四个条件，并在实际执行场景之前不声称评分，而是写入每个场景的结果和指标。
 
-## Results dashboard
+## 结果看板
 
-Install the optional Streamlit UI and start the read-only dashboard with:
+安装可选的 Streamlit UI 并使用以下命令启动只读仪表板：
 
 ```sh
 .venv/bin/pip install -e '.[test,ui]'
 .venv/bin/streamlit run src/webapptester/dashboard.py --server.address 127.0.0.1 -- --runs-root runs
 ```
 
-Open [http://127.0.0.1:8501](http://127.0.0.1:8501) to inspect the run history,
-checkpoint evidence, actions, screenshots, and available report artifacts. The
-`runs/` directory is local demo output and is ignored by Git; configure another
-local root with `--runs-root` when needed. Page-derived evidence and the report
-and events downloads remain hidden until you explicitly select the raw-evidence
-reveal control. Screenshots and Playwright Trace are raw page evidence and may
-contain sensitive page content. In particular, a trace may contain session
-cookies, so it stays on disk for local inspection and is never a dashboard
-download.
+打开 [http://127.0.0.1:8501](http://127.0.0.1:8501) 查看运行历史、检查点证据、操作、截图和报告文件。
+`runs/` 目录为本地演示输出，Git 会忽略它；需要时请配置另一个带有 `--runs-root` 的本地根目录。页面衍生的证据以及报告和事件下载在显式选择原始证据揭示控件之前保持隐藏。截图和 Playwright Trace 是原始页面证据，可能包含敏感页面内容。特别是，Trace 可能包含会话 Cookie，因此它保留在磁盘上以供本地检查，且永远不会作为仪表板下载。
 
-## Admidio fixture preparation
+## Admidio 测试环境准备
 
-An isolated Compose template for the course's Admidio 5.0.2 target is at
-`examples/admidio/compose.yaml`. It binds only `127.0.0.1:3102`, keeps its
-database private to the Compose network, and uses separate named volumes.
-Create the ignored, mode-`0600` database credentials with:
+课程目标版本 Admidio 5.0.2 的独立 Compose 模板位于 `examples/admidio/compose.yaml`。它仅绑定 `127.0.0.1:3102`，数据库只在 Compose 网络内开放，并使用独立的命名卷。使用以下命令创建被 Git 忽略、权限为 `0600` 的数据库凭据：
 
 ```sh
 .venv/bin/python scripts/setup_admidio_local.py
@@ -221,14 +150,9 @@ docker compose --env-file runs/admidio-local/instance.env \
   -p webapptester-admidio -f examples/admidio/compose.yaml up -d
 ```
 
-The application image is pinned to `admidio/admidio:v5.0.2` and requests
-`linux/amd64`. The configuration has been validated with `docker compose
-config`. Docker Hub timed out on this machine, so an official ZIP and Homebrew
-PHP fallback were used to install a separate live fixture. Its administrator
-login was verified on `http://127.0.0.1:3102/`; the existing 4gaBoards fixture
-and its volumes are independent.
+应用镜像固定为 `admidio/admidio:v5.0.2`，平台为 `linux/amd64`。配置已通过 `docker compose config` 验证。由于这台机器访问 Docker Hub 超时，实际使用官方 ZIP 和 Homebrew PHP 作为替代方案安装了独立的本地测试环境。管理员登录已在 `http://127.0.0.1:3102/` 验证；它与现有 4gaBoards 测试环境及其数据卷相互独立。
 
-To reproduce that fallback on a Mac with a locally accessible MySQL server:
+要在具有本地可访问 MySQL 服务器的 Mac 上重现该回退方案：
 
 ```sh
 brew install php@8.3
@@ -242,38 +166,16 @@ unzip -q -n runs/admidio-local/admidio-5.0.2.zip -d runs/admidio-local/app
 /opt/homebrew/opt/php@8.3/bin/php -S 127.0.0.1:3102 -t runs/admidio-local/app
 ```
 
-The verified ZIP SHA-256 is
-`0d39f410c2a0747a1a68928e31261f3d65513a6674639a7d4b7cff5d63a88d7e`.
-`setup_admidio_native.py` creates only the dedicated
-`webapptester_admidio` database and `wat_admidio` local user; it expects
-socket-based MySQL administrative access and refuses inconsistent existing
-state. Complete the official browser installer on port 3102 using the database
-password in the ignored `runs/admidio-local/instance.env`, and the test
-administrator in the ignored `runs/admidio-local/admin.env`. The database host
-is `127.0.0.1`, the organization is a disposable local test organization, and
-both private files must stay outside Git. Then save a browser login state:
+已验证的 ZIP SHA-256 为 `0d39f410c2a0747a1a68928e31261f3d65513a6674639a7d4b7cff5d63a88d7e`。
+`setup_admidio_native.py` 仅创建专用的 `webapptester_admidio` 数据库和 `wat_admidio` 本地用户；它期望基于套接字的 MySQL 管理访问权限，并拒绝不一致的现有状态。在端口 3102 上完成官方浏览器安装程序，使用被忽略的 `runs/admidio-local/instance.env` 中的数据库密码和被忽略的 `runs/admidio-local/admin.env` 中的测试管理员账户。数据库主机为 `127.0.0.1`，组织为一次性本地测试组织，且所有私有文件必须保留在 Git 之外。然后保存浏览器登录状态：
 
 ```sh
 .venv/bin/python scripts/bootstrap_admidio_auth.py
 ```
 
-The current local fixture has 49 application tables and a verified
-administrator session. A local Ollama `qwen3.5:9b` run opened Preferences and
-verified its visible `heading` region in two browser actions. The private
-report, screenshot, and Trace are under
-`runs/admidio-local/semantic-heading-acceptance/20261019T082127941731Z/`.
-Earlier local Admidio runs returned `UNKNOWN` after unsupported model output
-or incorrect navigation. A preliminary `PASS` from stale sidebar text was
-invalidated by the current-page evidence check and is not acceptance evidence.
+当前的本地测试环境具有 49 个应用程序表和一个已验证的管理员会话。本地运行的 Ollama `qwen3.5:9b` 打开了偏好设置，并通过两次浏览器操作验证了其可见的 `heading` 区域。私有报告、截图和 Trace 位于 `runs/admidio-local/semantic-heading-acceptance/20261019T082127941731Z/` 下。
+早期的本地 Admidio 运行在遇到不支持的模型输出或不正确的导航后返回 `UNKNOWN`。来自陈旧侧边栏文本的初步 `PASS` 已被当前页面证据检查无效化，因此不是验收证据。
 
-## Local Discourse fixture
+## 本地 Discourse 测试环境
 
-The isolated Discourse `v2025.12.0-latest` fixture runs on macOS with local
-PostgreSQL, Redis, Rails and Ember. Setup, ports, private login state and a
-verified Ollama acceptance report are documented in
-[docs/discourse-local.md](docs/discourse-local.md). The B0–B3 harness and
-its external scenario manifest format are documented in
-[docs/ablation.md](docs/ablation.md).
-The latter also records a read-only three-application, four-condition local
-pilot, its one-command reproduction script, and why it is separate from the
-pending formal evaluation.
+独立的 Discourse `v2025.12.0-latest` 测试环境在 macOS 上运行，使用本地 PostgreSQL、Redis、Rails 和 Ember。环境设置、端口、私有登录状态和 Ollama 验收报告见 [Discourse 本地环境说明](docs/discourse-local.md)。B0–B3 条件、外部场景清单格式及三应用试跑结果见 [消融实验说明](docs/ablation.md)。

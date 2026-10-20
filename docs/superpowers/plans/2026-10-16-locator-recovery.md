@@ -1,33 +1,31 @@
-# Locator Recovery and Grounded Ref Actions
+# 定位器恢复与有依据的元素引用操作
 
-**Goal:** Let the agent distinguish repeated controls in a real web app and recover from a failed locator within the 35-action budget, without hardcoding 4gaBoards selectors or relaxing evidence-based verdicts.
+**目标：** 让代理能够在真实 Web 应用中区分重复控件，并在 35 次动作预算内从失败的定位器中恢复，同时避免硬编码 4gaBoards 选择器或放宽基于证据的裁决。
 
-**Observed failure:** The 4gaBoards dashboard has two visible `Add Project` buttons. Qwen proposed `role=button;name=Add Project`; Playwright's strict locator failed after step 2. The controller then returned UNKNOWN, and the project was not created.
+**观察到的失败情况：** 4gaBoards 仪表板上有两个可见的 `Add Project` 按钮。Qwen 提出了 `role=button;name=Add Project`；Playwright 的严格定位器在第 2 步后失败。随后控制器返回了 UNKNOWN，项目未被创建。
 
-**Design:** On each observation, `BrowserGateway` captures a Playwright AI ARIA snapshot with temporary element refs. It keeps the snapshot in memory for the Executor and retains the existing visible `Observation.text` as the only source for Verifier quotes. The Executor may return `ref=eN`; the gateway accepts only refs present in the latest snapshot. The snapshot and action input values must not appear in reports, events, or dashboard exports. Snapshot input values are redacted before they are sent to a model. No page cookies or storage state enter model prompts.
+**设计：** 在每次观察时，`BrowserGateway` 会捕获带有临时元素引用的 Playwright AI ARIA 快照，并将其保留在内存中供 Executor 使用，同时保留现有的可见 `Observation.text` 作为 Verifier 引用来源的唯一依据。Executor 可能返回 `ref=eN`；网关仅接受最新快照中存在的引用。快照和动作输入值不得出现在报告、事件或仪表板导出中。在将快照输入值发送给模型之前，需对其进行脱敏处理。页面 Cookie 或存储状态不得进入模型提示。不合格的定位器匹配多个元素仍被视为错误。此类失败会消耗一个浏览器步骤，记录安全错误类别，并最多可重试两次，使用新的观察结果和简短的失败提示。其他失败则保留当前的 UNKNOWN 行为。恢复的定位器错误本身无法满足检查点；PASS 仍需 Verifier 从后续观察中获取确凿证据。重复的状态/动作检测以及 35 步上限依然具有权威性。
 
-An unqualified locator matching multiple elements remains an error. Such a failure consumes a browser step, records a safe error class, and may be retried at most twice using a fresh observation and a short failure hint. Other failures retain the current UNKNOWN behavior. A recovered locator error cannot itself satisfy a checkpoint; PASS still requires the Verifier's grounded evidence from subsequent observations. Repeated state/action detection and the 35-step ceiling remain authoritative.
+最低 Playwright 版本变为 1.59，因为当时添加了 AI ARIA 快照和 `get_by_ref`。官方 API 参考：[Playwright Python Locator](https://playwright.dev/python/docs/api/class-locator)。
 
-The minimum Playwright version becomes 1.59 because AI ARIA snapshots and `get_by_ref` were added then. Official API reference: [Playwright Python Locator](https://playwright.dev/python/docs/api/class-locator).
+## 任务
 
-## Tasks
+1. 添加快照捕获、输入值脱敏、最新引用验证以及 `ref=eN` 分发至 `BrowserGateway`。测试临时引用、格式错误/虚构的引用、重复角色失败，以及防泄漏情况。
+2. 将临时快照和安全失败提示传递给 `Executor`；更新其提示，在角色/名称重复时优先使用引用。保持与测试替身和角色签名的兼容性。
+3. 让 `Controller` 仅重试分类后的模糊定位器失败情况，考虑每个动作并强制执行较小的重试上限。测试恢复至确凿的 PASS 以及耗尽至 UNKNOWN，包括保存的动作事件。
+4. 需要为独立的最终断言提供单独的、可审计的证据。特别是，仪表板和侧边栏的可见性各自需要自己的检查点和作用域观察支持。拒绝接受整页引用作为两个位置的证明，并将检查点定义持久化到报告中。回归测试必须表明，单一位置或缺失项目的观察无法通过（PASS）。
+5. 运行聚焦测试和完整测试，然后首先使用唯一的本地项目名称探测模型。仅在确认不存在 `Course Test` 项目后，才在隔离的测试环境上重新运行已知的 4gaBoards `Course Test` 示例。保持模型的裁决诚实并保存本地的截图/Trace。在推送之前独立审查更改。
 
-1. Add snapshot capture, input-value redaction, latest-ref validation and `ref=eN` dispatch to `BrowserGateway`. Test ephemeral refs, malformed/invented refs, duplicate role failure, and nonleakage.
-2. Pass the temporary snapshot and safe failure hint to `Executor`; update its prompt to prefer refs when a role/name is repeated. Preserve compatibility with test doubles and role signatures.
-3. Let `Controller` retry only classified ambiguous-locator failures, accounting for each action and enforcing a small retry bound. Test recovery to grounded PASS and exhaustion to UNKNOWN, including saved action events.
-4. Require separate, auditable evidence for independent final assertions. In particular, dashboard and sidebar visibility each need their own checkpoint and scoped observation support. Reject a whole-page quote as proof of both locations, and persist checkpoint definitions in the report. Regression tests must show that one-location or missing-project observations cannot PASS.
-5. Run focused and full tests, then first probe the model with a unique local project name. Rerun the single known 4gaBoards `Course Test` example on the isolated fixture only after checking that no `Course Test` project exists. Keep the model verdict honest and save screenshots/Trace locally. Review the changes independently before pushing.
+**风险边界：** ARIA 快照可能包含页面文本和输入值。只有经过清理的快照才会到达 Executor；原始快照保持临时状态。认证后的 Trace 保留在本地，且永远不会作为仪表板下载，因为它可能包含会话 Cookie。
 
-**Risk boundary:** ARIA snapshots can contain page text and input values. Only a sanitized snapshot reaches the Executor; raw snapshots remain transient. Authenticated Trace remains local and is never a dashboard download because it may contain session cookies.
+## 验证状态
 
-## Verification status
-
-- The isolated 4gaBoards fixture and local Ollama completed the full natural-language creation scenario with a fresh project name after the evidence audit. The report at `runs/4gaboards-local/runtime-acceptance-after-audit/20261016T102519799424Z/report.json` is `PASS`: five browser actions, five saved screenshots, a local Trace, and independent `dashboard`/`sidebar` SAT evidence from observation `o5` on the scenario start URL. The target text appears in distinct nonoverlapping `main` and `aside` regions. This report is local and ignored by Git.
-- Earlier `UNKNOWN` model probes remain in the ignored run history. They are not recast as application failures or successful tests.
-- Managed Playwright Chromium is required for stable local acceptance on this machine. The installed system Chrome channel crashed during long-running probes; the CLI now tries managed full Chromium first, then the managed default and installed Chrome.
-- Scoped positive-presence evidence is accepted only from the scenario start URL and the newest observation. Semantic as well as spatial regions are checked for geometric separation. Form recovery only infers a value for an active field inside a dialog and clicks the observed dialog button by its snapshot ref.
-- The full test suite passed `164 passed, 1 skipped` after the final evidence-rule changes. The skipped test is the opt-in isolated 4gaBoards smoke test; the real model acceptance above exercised the fixture separately.
-- The result dashboard was restarted with an absolute runs root and displayed the prior real PASS with its two checkpoint rows, screenshots, and local Trace path. The new report can be selected after refreshing the page.
-- A diagnostic run created `Course Test` and captured it in both locations, but its report remained `UNKNOWN` because Ollama returned malformed Verifier JSON. The fixture therefore must not be used for another `Course Test` creation attempt. In accordance with the approved design, unsupported role JSON is never promoted to SAT by deterministic fallback.
-- A later fresh-name probe stopped at step 1 with `UNKNOWN` because Ollama's Executor JSON was malformed before any creation. This is model variability; the earlier end-to-end PASS remains the evidence for the successful scenario.
-- DeepSeek API spend remains ¥0; no API key was available in the environment.
+- 隔离的 4gaBoards 测试环境和本地 Ollama 在证据审计后，使用新的项目名称完成了完整的自然语言创建场景。位于 `runs/4gaboards-local/runtime-acceptance-after-audit/20261016T102519799424Z/report.json` 的报告为 `PASS`：包含五个浏览器操作、五个保存的截图、本地 Trace，以及来自场景起始 URL 的观察 `o5` 的独立 `dashboard`/`sidebar` SAT 证据。目标文本出现在互不重叠的 `main` 和 `aside` 区域中。该报告为本地版本，且被 Git 忽略。
+- 早期的 `UNKNOWN` 模型探测仍保留在被忽略的运行历史中。它们不会被重新归类为应用故障或成功测试。
+- 本机上的稳定本地验收需要托管的 Playwright Chromium。已安装的系统 Chrome 通道在长时间运行的探测期间崩溃；CLI 现在首先尝试托管的完整 Chromium，然后尝试托管的默认版本和已安装的 Chrome。
+- 范围限定的存在性证据仅接受来自场景起始 URL 和最新观察的结果。语义区域和空间区域均会检查几何分离情况。表单恢复仅在对话框内的活动字段中推断值，并通过其快照引用点击观察到的对话框按钮。
+- 在最终证据规则变更后，完整的测试套件通过了 `164 passed, 1 skipped`。被跳过的测试是可选的隔离型 4gaBoards 冒烟测试；上述真实的模型验收已单独演练了测试环境。
+- 结果仪表盘使用绝对运行根目录重新启动，并显示了之前的真实 PASS 及其两个检查点行、截图和本地 Trace 路径。刷新页面后可以选择新的报告。
+- 诊断运行创建了 `Course Test` 并在两个位置捕获了它，但其报告仍为 `UNKNOWN`，因为 Ollama 返回了格式错误的 Verifier JSON。因此，该测试环境不得用于另一次 `Course Test` 创建尝试。根据已批准的设计，不支持的角色 JSON 绝不会通过确定性回退提升为 SAT。
+- 稍后的一次 使用新名称的探测在步骤 1 处停止并生成 `UNKNOWN`，因为 Ollama 的 Executor JSON 在创建之前就已格式错误。这是模型变异性；之前的端到端 PASS 仍是成功场景的证据。
+- DeepSeek API 支出仍为 ¥0；环境中没有可用的 API 密钥。
