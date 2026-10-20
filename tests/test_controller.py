@@ -588,7 +588,7 @@ def test_explicit_executor_aliases_win_over_kwargs_fallback() -> None:
 
     assert action.kind == "stop"
     assert executor.calls == [
-        (None, "current snapshot", {"failure_hint": "ambiguous_locator"})
+        (None, "current snapshot", {"failure_hint": "ambiguous_locator", "budget_remaining": 35})
     ]
 
 

@@ -551,6 +551,42 @@ def test_executor_prompt_receives_gap_request() -> None:
     assert "the project appears in the sidebar" in provider.calls[0][1]
 
 
+def test_planner_replans_one_existing_gap_and_executor_receives_selected_strategy() -> None:
+    checkpoint = Checkpoint("c1", "Create a project", "project exists")
+    gap = GapRequest("c1", "visible project link", "sidebar", 2)
+    provider = FakeProvider({
+        "checkpoint_id": "c1", "candidates": [
+            {"approach": "open sidebar", "expected_evidence": "visible project link",
+             "estimated_action_cost": 1, "expected_benefit": 0.8},
+        ],
+    })
+    plans = Planner(provider).replan_gap(_scenario(), checkpoint, gap, _observation(), 3)
+
+    assert len(plans) == 1
+    assert plans[0].checkpoint_id == "c1"
+    assert plans[0].approach == "open sidebar"
+    assert "visible project link" in provider.calls[0][1]
+    executor_provider = FakeProvider({"action": {"kind": "click", "locator": "#sidebar"}})
+    Executor(executor_provider).next_action(
+        _scenario(), (checkpoint,), _observation(), (), gap_request=gap, gap_plan=plans[0],
+    )
+    assert '"approach": "open sidebar"' in executor_provider.calls[0][1]
+
+
+def test_planner_rejects_changed_checkpoint_in_gap_plan() -> None:
+    checkpoint = Checkpoint("c1", "Create a project", "project exists")
+    provider = FakeProvider(
+        {"checkpoint_id": "other", "candidates": []},
+        {"checkpoint_id": "other", "candidates": []},
+    )
+    with pytest.raises(ModelOutputError, match="invalid role output"):
+        Planner(provider).replan_gap(
+            _scenario(), checkpoint, GapRequest("c1", "visible link", "sidebar", 2),
+            _observation(), 3,
+        )
+    assert len(provider.calls) == 2
+
+
 def test_executor_redacts_prior_action_values_from_provider_history() -> None:
     provider = FakeProvider({"action": {"kind": "click", "locator": "#next"}})
 

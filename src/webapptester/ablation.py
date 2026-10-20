@@ -26,10 +26,9 @@ class AblationConfig:
     """One ablation condition.
 
     B0 is the ordinary three-role baseline.  B1 adds the evidence contract,
-    B2 adds structured verifier gap feedback, and B3 adds the remaining-budget
-    arbitration heuristic.  The controller's fixed maximum remains in force
-    in every condition; B3 chooses whether an explicitly estimated gap is
-    affordable before requesting another browser action.
+    B2 adds Planner replanning for structured verifier gaps, and B3 adds
+    remaining-budget arbitration over the candidate routes. The controller's
+    fixed maximum remains in force in every condition.
     """
 
     variant: str

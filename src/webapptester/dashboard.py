@@ -1,8 +1,9 @@
-"""Read-only Streamlit view for persisted WebAppTester runs."""
+"""Streamlit runner and results view for WebAppTester."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +12,13 @@ from typing import Any
 import streamlit as st
 
 from webapptester.results import RunRecord, artifact_path, list_runs
+from webapptester.ui_runner import (
+    UiJob,
+    parse_scenario_upload,
+    read_ui_progress,
+    start_ui_job,
+    storage_state_options,
+)
 
 
 _VARIANTS = ("B0", "B1", "B2", "B3")
@@ -233,6 +241,115 @@ def _run_contexts(groups: tuple[ComparisonGroup, ...]) -> dict[Path, tuple[str, 
     return contexts
 
 
+def _ui_run_contexts(
+    root: Path, runs: tuple[RunRecord, ...]
+) -> dict[Path, tuple[str, str, str]]:
+    contexts: dict[Path, tuple[str, str, str]] = {}
+    ui_root = root.resolve() / "ui-runs"
+    for run in runs:
+        try:
+            relative = run.directory.resolve().relative_to(ui_root)
+        except ValueError:
+            continue
+        if len(relative.parts) != 2:
+            continue
+        request = _read_small_json(run.directory.parent / "request.json", root)
+        if not isinstance(request, dict) or not isinstance(request.get("scenario"), str):
+            continue
+        variant = request.get("variant")
+        contexts[run.directory] = (
+            f"界面测试 {relative.parts[0]}",
+            variant if isinstance(variant, str) else "完整方案",
+            request["scenario"],
+        )
+    return contexts
+
+
+def _render_launch_form(root: Path) -> None:
+    st.subheader("启动新测试")
+    active = st.session_state.get("ui_job")
+    running = isinstance(active, UiJob) and active.process.poll() is None
+    if running:
+        st.info("已有测试正在运行；完成后可以启动下一项。")
+    mode = st.radio("场景来源", ("手动输入", "导入文件"), horizontal=True)
+    scenario_text = ""
+    imported_url = ""
+    url_key = "ui-url-manual"
+    if mode == "手动输入":
+        scenario_text = st.text_area(
+            "自然语言测试场景", height=120,
+            placeholder="例如：打开项目页面，确认目标项目同时出现在仪表盘和侧栏。",
+        )
+    else:
+        uploaded = st.file_uploader("导入 .txt 或 .json 场景文件", type=("txt", "json"))
+        if uploaded is not None:
+            try:
+                imported = parse_scenario_upload(uploaded.name, uploaded.getvalue())
+            except ValueError as error:
+                st.error(str(error))
+            else:
+                selected = st.selectbox(
+                    "选择导入案例", range(len(imported)),
+                    format_func=lambda index: f"案例 {index + 1}：{imported[index][0][:80]}",
+                )
+                scenario_text, imported_url = imported[selected]
+                st.caption(f"已导入 {len(imported)} 个案例；本次只运行所选案例。")
+                digest = hashlib.sha256(uploaded.getvalue()).hexdigest()[:12]
+                url_key = f"ui-url-import-{digest}-{selected}"
+    url = st.text_input("应用地址（URL）", value=imported_url, key=url_key)
+    provider = st.selectbox("模型来源", ("ollama", "deepseek"))
+    model = st.text_input(
+        "模型名称", value="qwen3.5:9b" if provider == "ollama" else "deepseek-flash",
+        key=f"ui-model-{provider}",
+    )
+    max_steps = st.number_input("浏览器操作步数上限", min_value=1, max_value=35, value=35)
+    variant = st.selectbox("实验配置", ("B3", "B0", "B1", "B2"))
+    auth_files = storage_state_options(root)
+    storage_state = st.selectbox(
+        "登录状态", (None, *auth_files),
+        format_func=lambda path: "不使用" if path is None else str(path.relative_to(root.resolve())),
+    )
+    st.caption("登录状态使用本机已有的 Playwright auth.json；不会在页面中显示账号或密码。")
+    if provider == "deepseek":
+        st.warning("DeepSeek 会发送场景和页面内容至模型服务，并受本地人民币 20 元预算台账限制。")
+    if st.button("开始测试", type="primary", disabled=running):
+        try:
+            st.session_state["ui_job"] = start_ui_job(
+                scenario=scenario_text, url=url, provider=provider, model=model,
+                max_steps=int(max_steps), storage_state=storage_state,
+                root=root, variant=variant,
+            )
+            st.session_state.pop("ui_finished_report", None)
+        except (OSError, ValueError) as error:
+            st.error(str(error))
+        else:
+            st.rerun()
+
+
+@st.fragment(run_every="2s")
+def _render_live_progress() -> None:
+    job = st.session_state.get("ui_job")
+    if not isinstance(job, UiJob):
+        return
+    progress = read_ui_progress(job)
+    st.subheader("当前测试进度")
+    st.progress(
+        min(progress.steps / progress.max_steps, 1.0),
+        text=f"已执行 {progress.steps} / {progress.max_steps} 步",
+    )
+    st.write(
+        f"状态：{progress.status} · 当前阶段：{progress.phase} · "
+        f"最近操作：{progress.last_action} · 操作异常：{progress.errors} 次"
+    )
+    if progress.report_path is not None:
+        st.success("测试已结束。完整报告和证据已加入下方运行历史。")
+        if st.session_state.get("ui_finished_report") != str(progress.report_path):
+            st.session_state["ui_finished_report"] = str(progress.report_path)
+            st.rerun(scope="app")
+    elif progress.status == "运行中断":
+        st.error("测试进程已结束，但没有生成可读取的报告；请查看本机运行目录。")
+
+
 def _source_label(run: RunRecord) -> str:
     """Describe source metadata without guessing at a provider or model."""
 
@@ -354,6 +471,51 @@ def _safe_event(raw: object) -> dict[str, Any] | None:
     if not isinstance(raw, dict) or not isinstance(raw.get("type"), str):
         return None
     event_type = raw["type"]
+    if event_type == "gap_replanned":
+        count = raw.get("candidate_count")
+        remaining = raw.get("remaining_steps")
+        if type(count) is int and 1 <= count <= 3 and type(remaining) is int and 0 <= remaining <= 35:
+            return {"type": event_type, "candidate_count": count, "remaining_steps": remaining}
+        return None
+    if event_type == "budget_arbitration":
+        decision = raw.get("decision")
+        cost = raw.get("estimated_action_cost")
+        remaining = raw.get("remaining_steps")
+        attempts = raw.get("attempts")
+        if (
+            decision not in {"select_gap", "decline_gap"}
+            or type(cost) is not int or cost < 1
+            or type(remaining) is not int or not 0 <= remaining <= 35
+            or type(attempts) is not int or attempts < 0
+        ):
+            return None
+        safe = {
+            "type": event_type, "decision": decision,
+            "estimated_action_cost": cost, "remaining_steps": remaining,
+            "attempts": attempts,
+        }
+        if decision == "select_gap":
+            index = raw.get("candidate_index")
+            benefit = raw.get("expected_benefit")
+            if (
+                type(index) is not int or not 0 <= index <= 2
+                or isinstance(benefit, bool)
+                or not isinstance(benefit, (int, float))
+                or not 0 <= benefit <= 1
+            ):
+                return None
+            safe.update(candidate_index=index, expected_benefit=benefit)
+        else:
+            reason = raw.get("reason")
+            if reason not in {"unaffordable", "low_expected_value"}:
+                return None
+            safe["reason"] = reason
+        return safe
+    if event_type == "gap_replan_failed":
+        error_class = raw.get("error_class")
+        if error_class in {"ModelOutputError", "ValueError"}:
+            return {"type": event_type, "error_class": error_class}
+        return None
     if event_type == "action":
         action = raw.get("action")
         if not isinstance(action, dict):
@@ -412,6 +574,38 @@ def _safe_event(raw: object) -> dict[str, Any] | None:
             safe_observation["regions"] = safe_regions
         return safe_observation
     return None
+
+
+def _render_decisions(root: Path, run: RunRecord) -> None:
+    exported = _events_export(root, run)
+    if not exported:
+        return
+    events = [json.loads(line) for line in exported.decode("utf-8").splitlines()]
+    decisions = [
+        event for event in events
+        if event["type"] in {"gap_replanned", "budget_arbitration", "gap_replan_failed"}
+    ]
+    if not decisions:
+        return
+    st.subheader("补查与预算决策")
+    for event in decisions:
+        if event["type"] == "gap_replanned":
+            st.write(
+                f"Planner 提出 {event['candidate_count']} 条补查路线；"
+                f"当时剩余 {event['remaining_steps']} 步。"
+            )
+        elif event["type"] == "gap_replan_failed":
+            st.write("Planner 补查规划失败，本次结果保留为 UNKNOWN。")
+        elif event["decision"] == "select_gap":
+            st.write(
+                f"预算仲裁选中第 {event['candidate_index'] + 1} 条路线；"
+                f"预计耗费 {event['estimated_action_cost']} 步，"
+                f"预计收益 {event['expected_benefit']:.0%}，"
+                f"剩余 {event['remaining_steps']} 步。"
+            )
+        else:
+            reason = "所需步数超出剩余预算" if event["reason"] == "unaffordable" else "预计收益过低"
+            st.write(f"预算仲裁停止补查：{reason}。")
 
 
 def _artifact_warning(label: str) -> None:
@@ -553,6 +747,7 @@ def _render_selected_run(
     if run.status == "UNAVAILABLE":
         st.warning("本次运行的报告已损坏或不完整，无法查看详情。")
         return
+    _render_decisions(root, run)
     reveal_raw = st.checkbox(
         "显示页面证据和下载文件",
         help="页面文字、URL、截图、操作定位信息、证据原文和 Trace 可能包含敏感数据。",
@@ -572,12 +767,15 @@ def _render_selected_run(
 
 
 def render(root: Path) -> None:
-    """Render the read-only results dashboard for *root*."""
+    """Render the test launcher, progress, and saved results for *root*."""
 
     root = Path(root)
     st.set_page_config(page_title="WebAppTester 测试结果", page_icon="🧪", layout="wide")
     st.title("WebAppTester 测试结果")
-    st.caption(f"只读运行记录 · 结果目录：{root}")
+    st.caption(f"启动测试、查看进度与结果 · 结果目录：{root}")
+    _render_launch_form(root)
+    _render_live_progress()
+    st.divider()
     runs = list_runs(root)
     if not runs:
         st.info("结果目录中没有找到可查看的运行记录。")
@@ -586,6 +784,7 @@ def render(root: Path) -> None:
     groups = _comparison_groups(root, runs)
     _render_comparison(groups)
     contexts = _run_contexts(groups)
+    contexts.update(_ui_run_contexts(root, runs))
     st.divider()
     st.subheader("运行历史")
     history_rows: list[dict[str, Any]] = [

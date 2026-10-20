@@ -213,6 +213,32 @@ class Checkpoint:
 
 
 @dataclass(frozen=True, slots=True)
+class GapPlan:
+    """One Planner strategy for collecting a missing checkpoint observation."""
+
+    checkpoint_id: str
+    approach: str
+    expected_evidence: str
+    suggested_location: str
+    estimated_action_cost: int
+    expected_benefit: float
+
+    def __post_init__(self) -> None:
+        _require_text(self.checkpoint_id, "gap plan checkpoint_id")
+        _require_text(self.approach, "gap plan approach")
+        _require_text(self.expected_evidence, "gap plan expected_evidence")
+        _require_text(self.suggested_location, "gap plan suggested_location", nonempty=False)
+        if type(self.estimated_action_cost) is not int or self.estimated_action_cost < 1:
+            raise ValueError("gap plan estimated_action_cost must be positive")
+        if (
+            isinstance(self.expected_benefit, bool)
+            or not isinstance(self.expected_benefit, (int, float))
+            or not 0.0 <= self.expected_benefit <= 1.0
+        ):
+            raise ValueError("gap plan expected_benefit must be between 0 and 1")
+
+
+@dataclass(frozen=True, slots=True)
 class Action:
     kind: str
     locator: str = ""

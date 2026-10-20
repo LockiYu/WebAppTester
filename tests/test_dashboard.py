@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from streamlit.testing.v1 import AppTest
-from webapptester.dashboard import _events_export, _report_export
+from webapptester.dashboard import _events_export, _report_export, _safe_event
 from webapptester.results import list_runs
 
 
@@ -99,7 +99,7 @@ def test_dashboard_history_and_selected_run_show_evidence_and_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runs = tmp_path / "runs"
-    _write_run(
+    passed = _write_run(
         runs,
         "pass-run",
         status="PASS",
@@ -114,6 +114,17 @@ def test_dashboard_history_and_selected_run_show_evidence_and_artifacts(
         status="FAIL",
         reason="a required checkpoint is directly shown to be VIOLATED",
     )
+    with (passed / "events.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({
+            "type": "gap_replanned", "candidate_count": 2, "remaining_steps": 4,
+            "checkpoint_id": "secret checkpoint",
+        }) + "\n")
+        handle.write(json.dumps({
+            "type": "budget_arbitration", "decision": "select_gap",
+            "candidate_index": 1, "estimated_action_cost": 2,
+            "expected_benefit": 0.8, "remaining_steps": 4, "attempts": 0,
+            "approach": "secret approach",
+        }) + "\n")
     now = time.time()
     os.utime(runs / "pass-run" / "report.json", (now - 10, now - 10))
     os.utime(runs / "fail-run" / "report.json", (now, now))
@@ -126,7 +137,7 @@ def test_dashboard_history_and_selected_run_show_evidence_and_artifacts(
     assert set(history["状态"].tolist()) == {"PASS", "FAIL"}
     assert all("来源未知" in source for source in at.dataframe[0].value["来源"].tolist())
 
-    at.selectbox[0].set_value(1).run()
+    next(box for box in at.selectbox if box.label == "选择运行记录").set_value(1).run()
 
     at.checkbox[0].set_value(True).run()
 
@@ -141,6 +152,8 @@ def test_dashboard_history_and_selected_run_show_evidence_and_artifacts(
     assert "PASS" in text
     assert "all required checkpoints have supported SAT evidence" in text
     assert "操作步数" in text
+    assert "Planner 提出 2 条补查路线" in text
+    assert "预算仲裁选中第 2 条路线" in text
     assert "输入 Token" in text
     assert "输出 Token" in text
     assert "o1" in text
@@ -156,7 +169,7 @@ def test_dashboard_history_and_selected_run_show_evidence_and_artifacts(
         assert secret not in report_export
         assert secret not in events_export
 
-    at.selectbox[0].set_value(0).run()
+    next(box for box in at.selectbox if box.label == "选择运行记录").set_value(0).run()
     at.checkbox[0].set_value(True).run()
     assert not any(button.label == "下载 trace.zip" for button in at.download_button)
     assert any("会话凭据" in item.value for item in at.info)
@@ -167,7 +180,7 @@ def test_dashboard_history_and_selected_run_show_evidence_and_artifacts(
     assert trace_run.trace is not None
     trace_run.trace.unlink()
     trace_run.trace.symlink_to(outside_trace)
-    at.selectbox[0].set_value(1).run()
+    next(box for box in at.selectbox if box.label == "选择运行记录").set_value(1).run()
     at.checkbox[0].set_value(True).run()
     assert any("trace.zip 不可用" in item.value for item in at.warning)
 
@@ -178,7 +191,29 @@ def test_dashboard_empty_root_is_readable(tmp_path: Path, monkeypatch: pytest.Mo
     at = _dashboard_app(tmp_path, monkeypatch).run(timeout=20)
 
     assert at.exception == []
+    assert any(button.label == "开始测试" for button in at.button)
+    assert any(field.label == "自然语言测试场景" for field in at.text_area)
+    assert any(field.label == "应用地址（URL）" for field in at.text_input)
     assert any("没有找到可查看的运行记录" in item.value for item in at.info)
+
+
+def test_budget_events_export_only_safe_fields() -> None:
+    event = _safe_event({
+        "type": "budget_arbitration", "decision": "select_gap",
+        "candidate_index": 1, "estimated_action_cost": 2,
+        "expected_benefit": 0.8, "remaining_steps": 4, "attempts": 1,
+        "approach": "secret page text", "api_key": "secret",
+    })
+    assert event == {
+        "type": "budget_arbitration", "decision": "select_gap",
+        "candidate_index": 1, "estimated_action_cost": 2,
+        "expected_benefit": 0.8, "remaining_steps": 4, "attempts": 1,
+    }
+    assert _safe_event({
+        "type": "budget_arbitration", "decision": "select_gap",
+        "candidate_index": 1, "estimated_action_cost": 2,
+        "expected_benefit": "secret", "remaining_steps": 4, "attempts": 1,
+    }) is None
 
 
 def test_dashboard_compares_same_scenario_and_explains_its_goal(

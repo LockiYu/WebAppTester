@@ -22,6 +22,7 @@ from .schema import (
     Action,
     Checkpoint,
     Evidence,
+    GapPlan,
     Observation,
     Scenario,
     Verdict,
@@ -391,6 +392,7 @@ class Controller:
         gap_request: GapRequest | None = None
         current_verdict = Verdict("UNKNOWN", (), "run has not produced evidence")
         repeat_counts: dict[tuple[str, tuple[object, ...]], int] = {}
+        gap_attempt_counts: dict[str, int] = {}
         ambiguous_locator_retries = 0
         failure_hint = ""
         stop_reason: str | None = None
@@ -427,22 +429,34 @@ class Controller:
                     stop_reason = "browser action budget exhausted"
                     break
 
-                if (
-                    self.ablation is not None
-                    and self.ablation.budget_arbitration
-                    and gap_request is not None
-                    and gap_request.estimated_action_cost > self._remaining_budget(scenario, actions)
-                ):
-                    stop_reason = "budget arbitration declined verifier gap request"
-                    self.store.append_event(
-                        {
-                            "type": "budget_arbitration",
-                            "decision": "decline_gap",
-                            "estimated_action_cost": gap_request.estimated_action_cost,
-                            "remaining_steps": self._remaining_budget(scenario, actions),
-                        }
-                    )
-                    break
+                gap_plan: GapPlan | None = None
+                if gap_request is not None:
+                    required = next((item for item in checkpoints if item.id == gap_request.checkpoint_id and item.required), None)
+                    if required is None:
+                        self.store.append_event({"type": "gap_ignored", "reason": "unsupported_checkpoint"})
+                        gap_request = None
+                    else:
+                        try:
+                            candidates = self._replan_gap(
+                                scenario, required, gap_request, initial,
+                                self._remaining_budget(scenario, actions),
+                            )
+                        except (ModelOutputError, ValueError) as error:
+                            self.store.append_event({
+                                "type": "gap_replan_failed",
+                                "error_class": type(error).__name__,
+                            })
+                            stop_reason = "planner gap replan failed"
+                            break
+                        gap_plan = self._choose_gap_plan(
+                            candidates, gap_request, scenario, actions, gap_attempt_counts
+                        )
+                        if gap_plan is None:
+                            stop_reason = "budget arbitration declined verifier gap request"
+                            break
+                        gap_attempt_counts[gap_request.checkpoint_id] = (
+                            gap_attempt_counts.get(gap_request.checkpoint_id, 0) + 1
+                        )
 
                 action = self._next_action(
                     scenario,
@@ -450,6 +464,7 @@ class Controller:
                     initial,
                     tuple(history),
                     gap_request,
+                    gap_plan,
                     failure_hint=failure_hint,
                 )
                 if not isinstance(action, Action):
@@ -666,6 +681,7 @@ class Controller:
         observation: Observation,
         history: tuple[Action, ...],
         gap_request: GapRequest | None,
+        gap_plan: GapPlan | None = None,
         *,
         failure_hint: str = "",
     ) -> Action:
@@ -693,6 +709,8 @@ class Controller:
             optional["gap"] = gap_request
         elif accepts_var_kwargs:
             optional["gap_request"] = gap_request
+        if gap_plan is not None and (explicit_keyword("gap_plan") or accepts_var_kwargs):
+            optional["gap_plan"] = gap_plan
 
         snapshot = self._latest_snapshot()
         if explicit_keyword("accessibility_snapshot"):
@@ -706,13 +724,73 @@ class Controller:
             optional["failure_hint"] = failure_hint
 
         if (
-            self.ablation is not None
-            and self.ablation.budget_arbitration
+            (self.ablation is None or self.ablation.budget_arbitration)
             and (explicit_keyword("budget_remaining") or accepts_var_kwargs)
         ):
             optional["budget_remaining"] = self._remaining_budget(scenario, list(history))
 
         return method(scenario, checkpoints, observation, history, **optional)
+
+    def _replan_gap(
+        self, scenario: Scenario, checkpoint: Checkpoint, gap: GapRequest,
+        observation: Observation, remaining: int,
+    ) -> tuple[GapPlan, ...]:
+        method = getattr(self.planner, "replan_gap", None)
+        if not callable(method):
+            raise ValueError("planner does not support verifier gap replanning")
+        plans = tuple(method(scenario, checkpoint, gap, observation, remaining))
+        if not 1 <= len(plans) <= 3 or not all(
+            isinstance(plan, GapPlan) and plan.checkpoint_id == checkpoint.id
+            for plan in plans
+        ):
+            raise ValueError("planner returned invalid gap plans")
+        self.store.append_event({
+            "type": "gap_replanned", "checkpoint_id": checkpoint.id,
+            "candidate_count": len(plans), "remaining_steps": remaining,
+        })
+        return plans
+
+    def _choose_gap_plan(
+        self, plans: tuple[GapPlan, ...], gap: GapRequest, scenario: Scenario,
+        actions: list[Action], attempts: dict[str, int],
+    ) -> GapPlan | None:
+        if self.ablation is not None and not self.ablation.budget_arbitration:
+            return plans[0]
+        remaining = self._remaining_budget(scenario, actions)
+        affordable = [
+            (index, plan) for index, plan in enumerate(plans)
+            if plan.estimated_action_cost <= remaining
+        ]
+        attempted = attempts.get(gap.checkpoint_id, 0)
+        ranked = sorted(
+            affordable,
+            key=lambda pair: (
+                -(pair[1].expected_benefit * (0.5 ** attempted) / pair[1].estimated_action_cost),
+                pair[1].estimated_action_cost,
+                pair[0],
+            ),
+        )
+        best = ranked[0] if ranked else None
+        score = (
+            best[1].expected_benefit * (0.5 ** attempted) / best[1].estimated_action_cost
+            if best else 0.0
+        )
+        if best is None or score < 0.1 or attempted >= 3:
+            self.store.append_event({
+                "type": "budget_arbitration", "decision": "decline_gap",
+                "reason": "unaffordable" if best is None else "low_expected_value",
+                "estimated_action_cost": min(plan.estimated_action_cost for plan in plans),
+                "remaining_steps": remaining, "attempts": attempted,
+            })
+            return None
+        self.store.append_event({
+            "type": "budget_arbitration", "decision": "select_gap",
+            "candidate_index": best[0],
+            "estimated_action_cost": best[1].estimated_action_cost,
+            "expected_benefit": best[1].expected_benefit,
+            "remaining_steps": remaining, "attempts": attempted,
+        })
+        return best[1]
 
     def _latest_snapshot(self) -> str:
         value = getattr(self.browser, "latest_snapshot", "")

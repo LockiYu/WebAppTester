@@ -20,6 +20,7 @@ from .schema import (
     Action,
     Checkpoint,
     Evidence,
+    GapPlan,
     Observation,
     Scenario,
     canonical_scope,
@@ -131,6 +132,8 @@ If pending_form_submit is present, click its exact dialog submit locator.
 If failure_hint is ambiguous_locator, the previous locator matched multiple
 elements. For the same action, choose one of allowed_next_locators (current
 snapshot refs) when that list is nonempty; do not repeat the role locator.
+If gap_plan is present, use its approach to choose the next action that collects
+the requested evidence for its checkpoint. Keep the original scenario unchanged.
 For drag, use source locator => destination locator. Do not return JavaScript, evaluate,
 arbitrary code, multiple actions, or prose. If the observation URL is about:blank or
 does not match the scenario URL, the next action MUST be goto with the scenario URL.
@@ -302,6 +305,76 @@ class Planner:
 
         return retry_parse(self.provider, system, user, parse)
 
+    def replan_gap(
+        self,
+        scenario: Scenario,
+        checkpoint: Checkpoint,
+        gap_request: GapRequest | object,
+        observation: Observation,
+        remaining_steps: int,
+    ) -> tuple[GapPlan, ...]:
+        """Suggest bounded ways to inspect one missing, existing checkpoint."""
+
+        gap_id = getattr(gap_request, "checkpoint_id", None)
+        requested = getattr(gap_request, "requested_evidence", None)
+        location = getattr(gap_request, "suggested_location", "")
+        if gap_id != checkpoint.id or not checkpoint.required:
+            raise ValueError("gap must name a required checkpoint")
+        if not isinstance(requested, str) or not requested.strip():
+            raise ValueError("gap requested_evidence must be nonempty")
+        if type(remaining_steps) is not int or remaining_steps < 1:
+            raise ValueError("remaining_steps must be positive")
+        system = (
+            "You are the Planner of a browser test. An existing required checkpoint lacks "
+            "visible evidence. Return only JSON: "
+            '{"checkpoint_id":"c1","candidates":[{"approach":"inspect sidebar",'
+            '"expected_evidence":"visible project link","estimated_action_cost":1,'
+            '"expected_benefit":0.8}]}. '
+            "Give 1 to 3 distinct, concrete inspection strategies, ordered by preference. "
+            "Cost is the estimated number of browser actions (1 to 35); benefit is the "
+            "probability of obtaining the specified evidence (0 to 1). "
+            "Copy gap.requested_evidence exactly into every expected_evidence field. "
+            "Do not alter the original checkpoint, invent success criteria, or propose "
+            "actions outside the user's scenario. Do not return locators or executable code."
+        )
+        user = "Input:\n" + _json({
+            "scenario": scenario.text,
+            "checkpoint": {
+                "id": checkpoint.id,
+                "source": checkpoint.source,
+                "expected": checkpoint.expected,
+                "scope": checkpoint.scope,
+                "target": checkpoint.target,
+            },
+            "gap": {"requested_evidence": requested, "suggested_location": location},
+            "observation": {"url": observation.url, "text": observation.text[:4000]},
+            "remaining_steps": remaining_steps,
+        })
+
+        def parse(raw: dict[str, object]) -> tuple[GapPlan, ...]:
+            if not isinstance(raw, dict) or set(raw) != {"checkpoint_id", "candidates"}:
+                raise ValueError("gap plan must have checkpoint_id and candidates")
+            if raw["checkpoint_id"] != checkpoint.id:
+                raise ValueError("gap plan checkpoint_id differs from requested checkpoint")
+            candidates = raw["candidates"]
+            if not isinstance(candidates, list) or not 1 <= len(candidates) <= 3:
+                raise ValueError("gap plan requires 1 to 3 candidates")
+            plans = []
+            for item in candidates:
+                if not isinstance(item, dict) or set(item) != {
+                    "approach", "expected_evidence", "estimated_action_cost", "expected_benefit"
+                }:
+                    raise ValueError("gap candidate has unsupported or missing fields")
+                if item["expected_evidence"] != requested:
+                    raise ValueError("gap candidate changes the requested evidence")
+                plans.append(GapPlan(
+                    checkpoint.id, item["approach"], item["expected_evidence"],
+                    location, item["estimated_action_cost"], item["expected_benefit"],
+                ))
+            return tuple(plans)
+
+        return retry_parse(self.provider, system, user, parse)
+
 
 def _explicit_heading_checkpoint(scenario: Scenario) -> Checkpoint | None:
     """Ground a named visible heading in the main content of the final page."""
@@ -406,6 +479,7 @@ class Executor:
         observation: Observation,
         history: tuple[Action, ...],
         gap_request: GapRequest | object | None = None,
+        gap_plan: GapPlan | None = None,
         accessibility_snapshot: str = "",
         failure_hint: str = "",
         budget_remaining: int | None = None,
@@ -473,6 +547,16 @@ class Executor:
             payload["pending_form_submit"] = pending_form_submit
         if gap_request is not None:
             payload["gap_request"] = _gap_request_payload(gap_request)
+        if gap_plan is not None:
+            if gap_request is None or gap_plan.checkpoint_id != getattr(gap_request, "checkpoint_id", None):
+                raise ValueError("gap_plan must match gap_request")
+            payload["gap_plan"] = {
+                "checkpoint_id": gap_plan.checkpoint_id,
+                "approach": gap_plan.approach,
+                "expected_evidence": gap_plan.expected_evidence,
+                "suggested_location": gap_plan.suggested_location,
+                "estimated_action_cost": gap_plan.estimated_action_cost,
+            }
         if budget_remaining is not None:
             if type(budget_remaining) is not int or budget_remaining < 0:
                 raise ValueError("budget_remaining must be a non-negative integer")

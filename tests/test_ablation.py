@@ -14,7 +14,7 @@ from webapptester.ablation import (
     summarize,
 )
 from webapptester.controller import Controller, GapRequest, verdict_from_evidence
-from webapptester.schema import Action, Checkpoint, Evidence, Observation, Scenario
+from webapptester.schema import Action, Checkpoint, Evidence, GapPlan, Observation, Scenario
 from webapptester.results import load_run
 from webapptester.ablation_cli import run_manifest
 
@@ -180,6 +180,12 @@ class _Planner:
     def plan(self, scenario):
         return (Checkpoint("c1", "verify", "visible state", True),)
 
+    def replan_gap(self, scenario, checkpoint, gap, observation, remaining):
+        return (GapPlan(
+            checkpoint.id, "inspect current page", gap.requested_evidence,
+            gap.suggested_location, max(1, gap.estimated_action_cost), 0.5,
+        ),)
+
 
 class _Executor:
     def __init__(self):
@@ -238,3 +244,84 @@ def test_b3_declines_gap_when_estimated_cost_exceeds_remaining_budget() -> None:
     assert verdict.status == "UNKNOWN"
     assert "budget arbitration" in verdict.reason
     assert any(event.get("type") == "budget_arbitration" for event in store.events)
+
+
+class _ReplanningPlanner(_Planner):
+    def __init__(self, candidates):
+        self.candidates = candidates
+        self.calls = []
+
+    def replan_gap(self, scenario, checkpoint, gap, observation, remaining):
+        self.calls.append((checkpoint.id, gap.checkpoint_id, remaining))
+        return self.candidates
+
+
+class _PlanRecordingExecutor(_Executor):
+    def __init__(self):
+        super().__init__()
+        self.plans = []
+
+    def next_action(self, scenario, checkpoints, observation, history, **kwargs):
+        self.plans.append(kwargs.get("gap_plan"))
+        return super().next_action(scenario, checkpoints, observation, history, **kwargs)
+
+
+def test_b3_selects_best_affordable_planner_route_and_passes_it_to_executor() -> None:
+    store = _Store()
+    planner = _ReplanningPlanner((
+        GapPlan("c1", "slow route", "visible state", "sidebar", 3, 0.95),
+        GapPlan("c1", "short route", "visible state", "sidebar", 1, 0.8),
+    ))
+    executor = _PlanRecordingExecutor()
+    browser = _Browser()
+    browser.max_steps = 4
+    controller = Controller(
+        planner, executor, _GapVerifier(), browser, store,
+        ablation=AblationConfig.for_variant("B3"),
+    )
+
+    controller.run(Scenario("verify", "http://example.test", max_steps=4))
+
+    assert planner.calls[0] == ("c1", "c1", 3)
+    assert executor.plans[1].approach == "short route"
+    selected = next(event for event in store.events if event.get("decision") == "select_gap")
+    assert selected["candidate_index"] == 1
+    assert "short route" not in str(store.events)
+
+
+def test_b3_declines_low_value_plan_without_another_browser_action() -> None:
+    store = _Store()
+    executor = _PlanRecordingExecutor()
+    planner = _ReplanningPlanner((
+        GapPlan("c1", "low value route", "visible state", "sidebar", 1, 0.05),
+    ))
+    controller = Controller(
+        planner, executor, _GapVerifier(), _Browser(), store,
+        ablation=AblationConfig.for_variant("B3"),
+    )
+
+    verdict = controller.run(Scenario("verify", "http://example.test", max_steps=2))
+
+    assert verdict.status == "UNKNOWN"
+    assert executor.calls == 1
+    assert any(event.get("reason") == "low_expected_value" for event in store.events)
+
+
+def test_b3_reports_missing_planner_replan_instead_of_silent_fallback() -> None:
+    class LegacyPlanner:
+        def plan(self, scenario):
+            return (Checkpoint("c1", "verify", "visible state", True),)
+
+    store = _Store()
+    executor = _PlanRecordingExecutor()
+    controller = Controller(
+        LegacyPlanner(), executor, _GapVerifier(), _Browser(), store,
+        ablation=AblationConfig.for_variant("B3"),
+    )
+
+    verdict = controller.run(Scenario("verify", "http://example.test", max_steps=2))
+
+    assert verdict.status == "UNKNOWN"
+    assert verdict.reason == "planner gap replan failed"
+    assert executor.calls == 1
+    assert any(event.get("type") == "gap_replan_failed" for event in store.events)
