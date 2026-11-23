@@ -296,6 +296,7 @@ class Evidence:
     quote: str
     status: str
     region_id: str = ""
+    visual_status: str = ""
 
     def __post_init__(self) -> None:
         _require_text(self.checkpoint_id, "evidence checkpoint_id")
@@ -303,8 +304,11 @@ class Evidence:
         _require_text(self.quote, "evidence quote")
         _require_text(self.status, "evidence status")
         _require_text(self.region_id, "evidence region_id", nonempty=False)
+        _require_text(self.visual_status, "evidence visual_status", nonempty=False)
         if self.status not in EVIDENCE_STATUSES:
             raise ValueError(f"unsupported evidence status: {self.status!r}")
+        if self.visual_status and self.visual_status not in EVIDENCE_STATUSES:
+            raise ValueError(f"unsupported visual status: {self.visual_status!r}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -410,15 +414,16 @@ def parse_observation(raw: dict[str, object]) -> Observation:
 
 
 def parse_evidence(raw: dict[str, object]) -> Evidence:
-    values = _mapping(raw, {"checkpoint_id", "observation_id", "quote", "status", "region_id"})
+    values = _mapping(raw, {"checkpoint_id", "observation_id", "quote", "status", "region_id", "visual_status"})
     required = ("checkpoint_id", "observation_id", "quote", "status")
     if any(key not in values for key in required):
         raise ValueError("evidence has missing required fields")
     for key in required:
         if not isinstance(values[key], str):
             raise ValueError(f"{key} must be a string")
-    if "region_id" in values and not isinstance(values["region_id"], str):
-        raise ValueError("region_id must be a string")
+    for optional in ("region_id", "visual_status"):
+        if optional in values and not isinstance(values[optional], str):
+            raise ValueError(f"{optional} must be a string")
     return Evidence(**values)
 
 

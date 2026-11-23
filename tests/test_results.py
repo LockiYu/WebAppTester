@@ -72,6 +72,15 @@ def test_unknown_report_with_partial_checkpoint_evidence_remains_viewable(tmp_pa
         load_run(tmp_path, _write_report(tmp_path / "invalid-pass", report))
 
 
+def test_visual_status_is_preserved_in_run_history(tmp_path: Path) -> None:
+    report = _report()
+    report["verdict"]["evidence"][0]["visual_status"] = "SAT"
+
+    record = load_run(tmp_path, _write_report(tmp_path / "vision", report))
+
+    assert record.evidence[0]["visual_status"] == "SAT"
+
+
 def test_list_runs_returns_valid_history_newest_first_and_preserves_fields(tmp_path: Path) -> None:
     older = tmp_path / "older"
     newer = tmp_path / "newer"

@@ -98,6 +98,24 @@ def test_deepseek_sends_json_mode_and_bearer_key() -> None:
     assert provider.usage == TokenUsage(prompt=11, completion=5)
 
 
+def test_deepseek_sends_screenshot_as_image_input() -> None:
+    response = _Response({
+        "choices": [{"message": {"content": '{"evidence": []}'}}],
+        "usage": {"prompt_tokens": 12, "completion_tokens": 2},
+    })
+    screenshot = b"\x89PNG\r\n\x1a\nexample"
+    with patch("urllib.request.urlopen", return_value=response) as opened:
+        DeepSeekProvider(api_key="secret").complete_json(
+            "system", "user", images=(("o1", screenshot),)
+        )
+
+    payload = json.loads(opened.call_args.args[0].data)
+    parts = payload["messages"][1]["content"]
+    assert parts[0] == {"type": "text", "text": "user"}
+    assert parts[1]["type"] == "image_url"
+    assert parts[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
 def test_deepseek_preserves_explicit_model_override() -> None:
     response = _Response(
         {

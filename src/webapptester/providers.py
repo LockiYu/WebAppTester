@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import base64
 import urllib.request
 from dataclasses import dataclass
 from typing import Protocol
@@ -195,15 +196,34 @@ class DeepSeekProvider(_HTTPJSONProvider):
             raise ValueError("DeepSeek API key is required")
         self.api_key = resolved_key
         self.model = model
+        self.supports_images = model == "deepseek-flash"
         self.url = url
         self.budget = budget
 
-    def complete_json(self, system: str, user: str) -> dict[str, object]:
+    def complete_json(
+        self, system: str, user: str, *, images: tuple[tuple[str, bytes], ...] = ()
+    ) -> dict[str, object]:
+        user_content: str | list[dict[str, object]] = user
+        if images:
+            if len(images) > 2:
+                raise ValueError("at most two screenshots may be sent per verification")
+            parts: list[dict[str, object]] = [{"type": "text", "text": user}]
+            for _observation_id, screenshot in images:
+                if not isinstance(screenshot, bytes) or not screenshot.startswith(b"\x89PNG\r\n\x1a\n"):
+                    raise ValueError("screenshot must contain PNG bytes")
+                if len(screenshot) > 16 * 1024 * 1024:
+                    raise ValueError("screenshot exceeds the image request limit")
+                encoded = base64.b64encode(screenshot).decode("ascii")
+                parts.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{encoded}", "detail": "original"},
+                })
+            user_content = parts
         payload: dict[str, object] = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system},
-                {"role": "user", "content": user},
+                {"role": "user", "content": user_content},
             ],
             "stream": False,
             "response_format": {"type": "json_object"},

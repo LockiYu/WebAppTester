@@ -318,7 +318,7 @@ def _parse_verdict(raw: object) -> tuple[str, str, tuple[dict[str, str], ...]]:
         raise ValueError("evidence must be a list of dictionaries")
     parsed: list[dict[str, str]] = []
     for item in evidence:
-        allowed_fields = _EVIDENCE_FIELDS | {"region_id"}
+        allowed_fields = _EVIDENCE_FIELDS | {"region_id", "visual_status"}
         if set(item) - allowed_fields or not _EVIDENCE_FIELDS.issubset(item):
             raise ValueError("evidence has missing or unsupported fields")
         if any(not isinstance(key, str) or not isinstance(value, str) for key, value in item.items()):
@@ -327,7 +327,9 @@ def _parse_verdict(raw: object) -> tuple[str, str, tuple[dict[str, str], ...]]:
             raise ValueError("evidence fields must be nonempty")
         if item["status"] not in _EVIDENCE_STATUSES:
             raise ValueError("evidence status is invalid")
-        parsed.append({**item, "region_id": item.get("region_id", "")})
+        if item.get("visual_status", "") not in _EVIDENCE_STATUSES | {""}:
+            raise ValueError("visual evidence status is invalid")
+        parsed.append({**item, "region_id": item.get("region_id", ""), "visual_status": item.get("visual_status", "")})
     return status, reason, tuple(parsed)
 
 

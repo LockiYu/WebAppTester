@@ -25,6 +25,46 @@ def _observation(text: str = "Project Alpha exists") -> Observation:
     return Observation("o1", "http://localhost", text, "shot.png", "fingerprint")
 
 
+def test_vision_verifier_requires_screenshot_confirmation(tmp_path) -> None:
+    class VisionProvider:
+        supports_images = True
+
+        def __init__(self):
+            self.images = ()
+
+        def complete_json(self, system, user, *, images=()):
+            self.images = images
+            return {"evidence": [{
+                "checkpoint_id": "c1", "observation_id": "o1",
+                "quote": "Alpha", "status": "SAT", "visual_status": "SAT",
+            }]}
+
+    screenshot = tmp_path / "shot.png"
+    screenshot.write_bytes(b"\x89PNG\r\n\x1a\nexample")
+    observation = Observation("o1", "http://localhost", "Alpha", str(screenshot), "fp")
+    checkpoint = Checkpoint("c1", "Alpha appears", "Alpha visible", True, target="Alpha")
+    provider = VisionProvider()
+
+    evidence = Verifier(provider).verify((checkpoint,), (observation,))
+
+    assert provider.images == (("o1", screenshot.read_bytes()),)
+    assert evidence[0].visual_status == "SAT"
+
+
+def test_vision_verifier_rejects_missing_screenshot(tmp_path) -> None:
+    class VisionProvider:
+        supports_images = True
+
+        def complete_json(self, system, user, *, images=()):
+            raise AssertionError("provider must not be called without a screenshot")
+
+    observation = Observation(
+        "o1", "http://localhost", "Alpha", str(tmp_path / "missing.png"), "fp"
+    )
+    with pytest.raises(ModelOutputError, match="screenshot unavailable"):
+        Verifier(VisionProvider()).verify((), (observation,))
+
+
 def test_executor_uses_action_schema_for_ollama_only() -> None:
     class SchemaProvider(OllamaProvider):
         received_schema = None

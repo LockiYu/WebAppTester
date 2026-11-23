@@ -139,6 +139,8 @@ def read_ui_progress(job: UiJob) -> UiProgress:
                     event_type = event.get("type")
                     if event_type == "gap_replanned":
                         phase = "Planner 补查规划"
+                    elif event_type == "recovery":
+                        phase = "异常恢复"
                     elif event_type == "budget_arbitration":
                         phase = "预算仲裁"
                     elif event_type == "gap_replan_failed":

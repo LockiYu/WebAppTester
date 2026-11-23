@@ -36,6 +36,13 @@ from .schema import (
 MAX_STEPS = 35
 REPEAT_LIMIT = 3
 AMBIGUOUS_LOCATOR_RETRY_LIMIT = 2
+ACTION_RECOVERY_LIMIT = 2
+RECOVERY_HINTS = {
+    "TimeoutError": "timeout",
+    "PlaywrightTimeoutError": "timeout",
+    "InvalidRefError": "stale_locator",
+    "Error": "action_error",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +72,7 @@ def verdict_from_evidence(
     *,
     scenario_url: str = "",
     evidence_contract: bool = True,
+    require_visual: bool = False,
 ) -> Verdict:
     """Return a verdict only when evidence is directly grounded in observations.
 
@@ -80,6 +88,8 @@ def verdict_from_evidence(
 
     if type(evidence_contract) is not bool:
         raise TypeError("evidence_contract must be a boolean")
+    if type(require_visual) is not bool:
+        raise TypeError("require_visual must be a boolean")
     if not evidence_contract:
         # B0 deliberately preserves the ordinary three-role baseline: the
         # verifier's structured status is accepted without the provenance,
@@ -285,6 +295,15 @@ def verdict_from_evidence(
             )
         supported[checkpoint.id] = item
 
+    if require_visual:
+        for checkpoint in required:
+            item = supported[checkpoint.id]
+            if item.status in {"SAT", "VIOLATED"} and item.visual_status != item.status:
+                return Verdict(
+                    status="UNKNOWN", evidence=evidence_values,
+                    reason=f"required checkpoint {checkpoint.id} lacks matching screenshot confirmation",
+                )
+
     scoped_regions: set[tuple[str, str]] = set()
     for checkpoint, item in (
         (checkpoint, supported[checkpoint.id])
@@ -394,6 +413,7 @@ class Controller:
         repeat_counts: dict[tuple[str, tuple[object, ...]], int] = {}
         gap_attempt_counts: dict[str, int] = {}
         ambiguous_locator_retries = 0
+        recovery_failures = 0
         failure_hint = ""
         stop_reason: str | None = None
 
@@ -417,6 +437,7 @@ class Controller:
                         if self.ablation is not None
                         else True
                     ),
+                    require_visual=bool(getattr(self.verifier, "requires_visual_evidence", False)),
                 )
                 if current_verdict.status == "PASS":
                     return self._finish(
@@ -504,6 +525,27 @@ class Controller:
                             continue
                         stop_reason = "ambiguous locator retries exhausted"
                         break
+                    if error_class in RECOVERY_HINTS:
+                        recovery_failures += 1
+                        initial = self.browser.observe(self.store)
+                        observations.append(initial)
+                        recovered_verdict = self._verify_after_failed_action(
+                            checkpoints, observations, evidence, scenario
+                        )
+                        if recovered_verdict is not None:
+                            self._record_recovery("confirmed", error_class, scenario, actions)
+                            return self._finish(
+                                recovered_verdict, checkpoints, actions, observations, started
+                            )
+                        if self._can_recover_action(
+                            scenario, actions, recovery_failures
+                        ):
+                            self._record_recovery("retry", error_class, scenario, actions)
+                            failure_hint = RECOVERY_HINTS[error_class]
+                            continue
+                        self._record_recovery("stop", error_class, scenario, actions)
+                        stop_reason = "browser action recovery exhausted"
+                        break
                     stop_reason = "browser action failed"
                     break
 
@@ -527,10 +569,29 @@ class Controller:
                         break
                     initial = self.browser.observe(self.store)
                     observations.append(initial)
-                    stop_reason = "browser action failed"
+                    if error_class in RECOVERY_HINTS:
+                        recovery_failures += 1
+                        recovered_verdict = self._verify_after_failed_action(
+                            checkpoints, observations, evidence, scenario
+                        )
+                        if recovered_verdict is not None:
+                            self._record_recovery("confirmed", error_class, scenario, actions)
+                            return self._finish(
+                                recovered_verdict, checkpoints, actions, observations, started
+                            )
+                    if error_class in RECOVERY_HINTS and self._can_recover_action(
+                        scenario, actions, recovery_failures
+                    ):
+                        self._record_recovery("retry", error_class, scenario, actions)
+                        failure_hint = RECOVERY_HINTS[error_class]
+                        continue
+                    if error_class in RECOVERY_HINTS:
+                        self._record_recovery("stop", error_class, scenario, actions)
+                    stop_reason = "browser action recovery exhausted" if error_class in RECOVERY_HINTS else "browser action failed"
                     break
 
                 failure_hint = ""
+                recovery_failures = 0
                 initial = self.browser.observe(self.store)
                 observations.append(initial)
                 new_evidence, gap_request = self._verify(
@@ -547,6 +608,7 @@ class Controller:
                         if self.ablation is not None
                         else True
                     ),
+                    require_visual=bool(getattr(self.verifier, "requires_visual_evidence", False)),
                 )
 
                 if current_verdict.status in {"PASS", "FAIL"}:
@@ -820,6 +882,40 @@ class Controller:
         if type(value) is int and value >= 0:
             return value
         return sum(action.kind != "stop" for action in actions)
+
+    def _can_recover_action(
+        self, scenario: Scenario, actions: list[Action], consecutive_failures: int,
+    ) -> bool:
+        return (
+            consecutive_failures <= ACTION_RECOVERY_LIMIT
+            and self._remaining_budget(scenario, actions) > 0
+        )
+
+    def _record_recovery(
+        self, decision: str, error_class: str, scenario: Scenario, actions: list[Action],
+    ) -> None:
+        self.store.append_event({
+            "type": "recovery", "decision": decision,
+            "error_class": error_class,
+            "remaining_steps": self._remaining_budget(scenario, actions),
+        })
+
+    def _verify_after_failed_action(
+        self, checkpoints: tuple[Checkpoint, ...], observations: list[Observation],
+        evidence: list[Evidence], scenario: Scenario,
+    ) -> Verdict | None:
+        """Accept a completed action only when a fresh observation proves success."""
+
+        incoming, _gap = self._verify(checkpoints, tuple(observations), scenario.url)
+        self._merge_evidence(evidence, incoming)
+        verdict = verdict_from_evidence(
+            checkpoints, evidence, observations, scenario_url=scenario.url,
+            evidence_contract=(
+                self.ablation.evidence_contract if self.ablation is not None else True
+            ),
+            require_visual=bool(getattr(self.verifier, "requires_visual_evidence", False)),
+        )
+        return verdict if verdict.status == "PASS" else None
 
     def _budget(self, scenario: Scenario) -> int:
         browser_budget = getattr(self.browser, "max_steps", MAX_STEPS)

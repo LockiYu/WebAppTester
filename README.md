@@ -2,6 +2,8 @@
 
 WebAppTester 通过 Planner、Executor 和 Verifier 三个角色执行有步数上限的 Playwright 浏览器测试。每次页面观察都保存可见文本和截图；最终报告给出 PASS、FAIL 或 UNKNOWN，并引用实际观察作为证据。
 
+浏览器操作超时或定位引用失效后，控制器会先重新观察页面并核验动作是否已生效，再在剩余步数内尝试新的操作；连续恢复失败会以 UNKNOWN 结束，避免重复提交和无限重试。使用 DeepSeek Flash 时，Verifier 会把最近的页面截图与 DOM 文本一起核验，并在报告中记录 `visual_status`。在完整证据方案中，文字与截图结论不一致或截图无法读取时，不会给出有把握的 PASS/FAIL。截图会发送到 DeepSeek 服务，可能包含页面上的敏感内容；运行前应使用专用测试账户和测试数据。
+
 ## 本地演示
 
 ```sh
@@ -29,7 +31,7 @@ CLI 会在指定输出目录下创建带唯一 UTC 时间戳的子目录（`runs
 
 每个场景都在带时间戳的批量运行目录中保留自己的产物。该目录包含 `batch-summary.json` 和 `batch-summary.csv`；汇总记录场景元数据、状态、报告路径、步数和原因，不包含操作输入值。全部场景通过时退出码为 0，任一场景失败时为 1，没有失败但至少一个场景无法判定时为 2。
 
-可通过 `--provider deepseek` 选择 DeepSeek；默认模型为 `deepseek-flash`，代码将其用于 DeepSeek-V4.1-Flash。结构化 JSON 请求会关闭思考模式，单次回复最多 4096 Token。运行前须在本地环境中配置 `DEEPSEEK_API_KEY`；没有密钥就不会发送 DeepSeek 请求。CLI 和批量运行器共用被 Git 忽略的 `runs/deepseek-budget.json` 预算台账。每次调用 `deepseek-flash` 前预留人民币 10 元；预留后可能超过人民币 20 元上限时停止。收到 Token 用量后，以保守估算替换预留额；缺少用量或请求异常中断时，保留全部预留额。
+可通过 `--provider deepseek` 选择 DeepSeek；默认模型为 `deepseek-flash`，代码将其用于 DeepSeek-V4.1-Flash。结构化 JSON 请求会关闭思考模式，单次回复最多 4096 Token。运行前须在本地环境中配置 `DEEPSEEK_API_KEY`；没有密钥就不会发送 DeepSeek 请求。CLI 和批量运行器共用被 Git 忽略的 `runs/deepseek-budget.json` 预算台账。每次调用 `deepseek-flash` 前预留人民币 10 元；预留后可能超过人民币 20 元上限时停止。收到 Token 用量后，以保守估算替换预留额；缺少用量或请求异常中断时，保留全部预留额。图像输入也计入 Token 用量，见 [DeepSeek Vision 文档](https://api-docs.deepseek.com/guides/vision/)。
 
 付费评测前应重新核对 [DeepSeek 模型与价格文档](https://api-docs.deepseek.com/quick_start/pricing/)；服务价格可能变化，仓库也不包含 API 密钥。
 

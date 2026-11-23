@@ -311,7 +311,7 @@ def _render_launch_form(root: Path) -> None:
     )
     st.caption("登录状态使用本机已有的 Playwright auth.json；不会在页面中显示账号或密码。")
     if provider == "deepseek":
-        st.warning("DeepSeek 会发送场景和页面内容至模型服务，并受本地人民币 20 元预算台账限制。")
+        st.warning("DeepSeek 会发送场景、页面内容和截图至模型服务，并受本地人民币 20 元预算台账限制。")
     if st.button("开始测试", type="primary", disabled=running):
         try:
             st.session_state["ui_job"] = start_ui_job(
@@ -396,7 +396,7 @@ def _safe_observation(observation: dict[str, object]) -> dict[str, object]:
 
 
 def _safe_evidence(item: dict[str, str]) -> dict[str, str]:
-    fields = ("checkpoint_id", "observation_id", "quote", "status", "region_id")
+    fields = ("checkpoint_id", "observation_id", "quote", "status", "region_id", "visual_status")
     return {key: item[key] for key in fields}
 
 
@@ -471,6 +471,20 @@ def _safe_event(raw: object) -> dict[str, Any] | None:
     if not isinstance(raw, dict) or not isinstance(raw.get("type"), str):
         return None
     event_type = raw["type"]
+    if event_type == "recovery":
+        decision = raw.get("decision")
+        error_class = raw.get("error_class")
+        remaining = raw.get("remaining_steps")
+        if (
+            decision in {"retry", "confirmed", "stop"}
+            and error_class in {"TimeoutError", "PlaywrightTimeoutError", "InvalidRefError", "Error"}
+            and type(remaining) is int and 0 <= remaining <= 35
+        ):
+            return {
+                "type": event_type, "decision": decision,
+                "error_class": error_class, "remaining_steps": remaining,
+            }
+        return None
     if event_type == "gap_replanned":
         count = raw.get("candidate_count")
         remaining = raw.get("remaining_steps")
@@ -583,11 +597,11 @@ def _render_decisions(root: Path, run: RunRecord) -> None:
     events = [json.loads(line) for line in exported.decode("utf-8").splitlines()]
     decisions = [
         event for event in events
-        if event["type"] in {"gap_replanned", "budget_arbitration", "gap_replan_failed"}
+        if event["type"] in {"gap_replanned", "budget_arbitration", "gap_replan_failed", "recovery"}
     ]
     if not decisions:
         return
-    st.subheader("补查与预算决策")
+    st.subheader("补查、恢复与预算决策")
     for event in decisions:
         if event["type"] == "gap_replanned":
             st.write(
@@ -596,6 +610,13 @@ def _render_decisions(root: Path, run: RunRecord) -> None:
             )
         elif event["type"] == "gap_replan_failed":
             st.write("Planner 补查规划失败，本次结果保留为 UNKNOWN。")
+        elif event["type"] == "recovery":
+            label = {
+                "retry": "重新观察后继续尝试",
+                "confirmed": "重新观察确认操作已完成",
+                "stop": "恢复次数或步数已用尽",
+            }[event["decision"]]
+            st.write(f"异常恢复：{label}；当时剩余 {event['remaining_steps']} 步。")
         elif event["decision"] == "select_gap":
             st.write(
                 f"预算仲裁选中第 {event['candidate_index'] + 1} 条路线；"
@@ -659,6 +680,8 @@ def _render_evidence(run: RunRecord) -> None:
         with st.expander(f"{checkpoint} · {status}"):
             st.write(f"观察记录 ID：{item['observation_id']}")
             st.write(f"证据原文：{item['quote']}")
+            if item.get("visual_status"):
+                st.write(f"截图核验：{item['visual_status']}")
             observation = observation_by_id.get(item["observation_id"])
             if observation is None:
                 st.warning("对应的观察记录不可用。")

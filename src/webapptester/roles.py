@@ -12,6 +12,7 @@ import re
 from copy import deepcopy
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TypeVar
 
 from .providers import ModelOutputError, ModelProvider, OllamaProvider
@@ -74,6 +75,7 @@ def retry_parse(
     *,
     attempts: int = 2,
     schema: dict[str, object] | None = None,
+    images: tuple[tuple[str, bytes], ...] = (),
 ) -> T:
     """Call a provider a bounded number of times to repair malformed output."""
 
@@ -81,6 +83,8 @@ def retry_parse(
         try:
             if schema is not None and isinstance(provider, OllamaProvider):
                 raw = provider.complete_json(system, user, schema=schema)
+            elif images:
+                raw = provider.complete_json(system, user, images=images)
             else:
                 raw = provider.complete_json(system, user)
             return parse(raw)
@@ -132,6 +136,10 @@ If pending_form_submit is present, click its exact dialog submit locator.
 If failure_hint is ambiguous_locator, the previous locator matched multiple
 elements. For the same action, choose one of allowed_next_locators (current
 snapshot refs) when that list is nonempty; do not repeat the role locator.
+If failure_hint is timeout, stale_locator, or action_error, the last browser
+action failed. Inspect the fresh observation before continuing. The action may
+already have taken effect; do not repeat a create, submit, or delete blindly.
+Choose a current locator or a different route toward the original checkpoint.
 If gap_plan is present, use its approach to choose the next action that collects
 the requested evidence for its checkpoint. Keep the original scenario unchanged.
 For drag, use source locator => destination locator. Do not return JavaScript, evaluate,
@@ -810,6 +818,7 @@ class Verifier:
             raise TypeError("evidence_contract must be a boolean")
         self.provider = provider
         self.evidence_contract = evidence_contract
+        self.requires_visual_evidence = bool(getattr(provider, "supports_images", False))
 
     def verify(
         self,
@@ -826,8 +835,24 @@ class Verifier:
             if observations and all(_is_positive_presence(item) for item in checkpoints if item.required)
             else observations
         )
-        user = "Verification inputs:\n" + _json(
-            {
+        images: tuple[tuple[str, bytes], ...] = ()
+        if self.requires_visual_evidence:
+            try:
+                images = tuple(
+                    (observation.id, Path(observation.screenshot).read_bytes())
+                    for observation in model_observations[-2:]
+                )
+            except OSError as error:
+                raise ModelOutputError("screenshot unavailable for visual verification") from error
+            system += (
+                "\nReal screenshots are attached in the order of screenshot_observation_ids. "
+                "For each evidence item tied to an attached screenshot, inspect its visible "
+                "pixels independently of the DOM text and add visual_status as SAT, "
+                "VIOLATED, or UNKNOWN. SAT requires the checkpoint to be visibly supported "
+                "in the screenshot; uncertainty or clipped content is UNKNOWN. "
+                "Do not infer visual_status from DOM text."
+            )
+        verification_input = {
                 "checkpoints": [
                     {
                         "id": checkpoint.id,
@@ -854,9 +879,12 @@ class Verifier:
                     for observation in model_observations
                 ],
             }
-        )
+        if images:
+            verification_input["screenshot_observation_ids"] = [item[0] for item in images]
+        user = "Verification inputs:\n" + _json(verification_input)
         checkpoint_ids = {checkpoint.id for checkpoint in checkpoints}
         observation_by_id = {observation.id: observation for observation in model_observations}
+        image_ids = {item[0] for item in images}
         if len(observation_by_id) != len(model_observations):
             raise ValueError("observation IDs must be unique")
 
@@ -871,6 +899,13 @@ class Verifier:
             evidence_items: list[Evidence] = []
             for value in values:
                 item = parse_evidence(value)
+                if self.requires_visual_evidence:
+                    if item.observation_id in image_ids and not item.visual_status:
+                        raise ValueError("screenshot evidence requires visual_status")
+                    if item.observation_id not in image_ids and item.visual_status:
+                        raise ValueError("visual_status cites a screenshot that was not supplied")
+                elif item.visual_status:
+                    raise ValueError("visual_status requires a supplied screenshot")
                 checkpoint = next(
                     (candidate for candidate in checkpoints if candidate.id == item.checkpoint_id),
                     None,
@@ -993,7 +1028,7 @@ class Verifier:
             )
             return VerificationResult(evidence=evidence, gap_request=gap)
 
-        return retry_parse(self.provider, system, user, parse)
+        return retry_parse(self.provider, system, user, parse, images=images)
 
 
 def _validate_action(action: Action, checkpoint_ids: set[str]) -> None:
@@ -1023,7 +1058,9 @@ def _gap_request_payload(gap_request: object) -> dict[str, object]:
     return values
 
 
-_SAFE_FAILURE_HINTS = frozenset({"ambiguous_locator"})
+_SAFE_FAILURE_HINTS = frozenset({
+    "ambiguous_locator", "timeout", "stale_locator", "action_error",
+})
 
 
 def _safe_failure_hint(value: object) -> str:

@@ -17,6 +17,16 @@ _PNG = base64.b64decode(
 )
 
 
+def test_recovery_event_exports_only_safe_decision_fields() -> None:
+    assert _safe_event({
+        "type": "recovery", "decision": "retry", "error_class": "TimeoutError",
+        "remaining_steps": 12, "secret": "must not appear",
+    }) == {
+        "type": "recovery", "decision": "retry", "error_class": "TimeoutError",
+        "remaining_steps": 12,
+    }
+
+
 def _write_run(
     root: Path,
     name: str,

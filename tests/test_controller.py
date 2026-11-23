@@ -54,6 +54,24 @@ def test_all_required_sat_evidence_from_observations_passes() -> None:
     assert len(verdict.evidence) == 2
 
 
+def test_visual_verdict_requires_matching_screenshot_assessment() -> None:
+    checkpoint = Checkpoint("c1", "Alpha appears", "Alpha visible", True, target="Alpha")
+    observation = _observation(text="Alpha")
+    text_only = Evidence("c1", "o1", "Alpha", "SAT")
+    visually_confirmed = Evidence("c1", "o1", "Alpha", "SAT", visual_status="SAT")
+    visually_contradicted = Evidence("c1", "o1", "Alpha", "SAT", visual_status="VIOLATED")
+
+    assert verdict_from_evidence(
+        (checkpoint,), (text_only,), (observation,), require_visual=True
+    ).status == "UNKNOWN"
+    assert verdict_from_evidence(
+        (checkpoint,), (visually_confirmed,), (observation,), require_visual=True
+    ).status == "PASS"
+    assert verdict_from_evidence(
+        (checkpoint,), (visually_contradicted,), (observation,), require_visual=True
+    ).status == "UNKNOWN"
+
+
 def test_unknown_required_evidence_cannot_pass() -> None:
     verdict = verdict_from_evidence(
         (_checkpoint("c1"), _checkpoint("c2")),
@@ -553,7 +571,13 @@ def test_browser_exception_after_reserving_step_is_appended_without_secret() -> 
 def test_nonrecoverable_action_result_skips_verifier_after_observing_failure() -> None:
     store = _FakeStore()
     verifier = _GroundedVerifier()
-    browser = _FakeBrowser(success=False)
+    class InvalidActionBrowser(_FakeBrowser):
+        def act(self, action):
+            result = super().act(action)
+            result.error = "ValueError: unsupported action"
+            return result
+
+    browser = InvalidActionBrowser(success=False)
 
     verdict = Controller(
         _FakePlanner((_checkpoint(),)),
@@ -567,7 +591,89 @@ def test_nonrecoverable_action_result_skips_verifier_after_observing_failure() -
     assert verifier.calls == 0
     assert browser.steps == 1
     assert browser.observations == 2
-    assert store.events[0]["error_class"] == "TimeoutError"
+    assert store.events[0]["error_class"] == "ValueError"
+
+
+def test_timeout_reobserves_then_recovers_with_new_action() -> None:
+    store = _FakeStore()
+    executor = _SnapshotExecutor([Action("click", "#old"), Action("click", "#fresh")])
+    browser = _RecoveryBrowser([
+        {"success": False, "error": "TimeoutError: secret input value"},
+        {"success": True, "error": ""},
+    ])
+    verifier = _GroundedVerifier()
+
+    verdict = Controller(
+        _FakePlanner((_checkpoint(),)), executor, verifier, browser, store
+    ).run(_scenario(max_steps=2))
+
+    assert verdict.status == "PASS"
+    assert browser.steps == 2
+    assert executor.calls == [("snapshot-1", ""), ("snapshot-2", "timeout")]
+    assert [event["success"] for event in store.events if event["type"] == "action"] == [False, True]
+    assert "secret input value" not in json.dumps(store.report)
+
+
+def test_timeout_with_completed_effect_does_not_repeat_submit() -> None:
+    class CompletedAfterTimeout(_RecoveryBrowser):
+        def observe(self, store):
+            result = super().observe(store)
+            if self.observations == 2:
+                return _observation(result.id, text="completed", fingerprint=result.fingerprint)
+            return result
+
+    store = _FakeStore()
+    executor = _SnapshotExecutor([Action("click", "#submit")])
+    browser = CompletedAfterTimeout([
+        {"success": False, "error": "TimeoutError: navigation was late"},
+    ])
+
+    verdict = Controller(
+        _FakePlanner((_checkpoint(),)), executor, _GroundedVerifier(), browser, store
+    ).run(_scenario())
+
+    assert verdict.status == "PASS"
+    assert browser.steps == 1
+    assert len(executor.calls) == 1
+
+
+def test_timeout_never_retries_past_remaining_budget() -> None:
+    store = _FakeStore()
+    browser = _RecoveryBrowser([
+        {"success": False, "error": "TimeoutError: late page"},
+    ])
+    executor = _SnapshotExecutor([Action("click", "#old")])
+
+    verdict = Controller(
+        _FakePlanner((_checkpoint(),)), executor, _GroundedVerifier(), browser, store
+    ).run(_scenario(max_steps=1))
+
+    assert verdict.status == "UNKNOWN"
+    assert browser.steps == 1
+    assert len(executor.calls) == 1
+
+
+def test_consecutive_timeouts_stop_after_bounded_recovery() -> None:
+    class NeverCompletedBrowser(_RecoveryBrowser):
+        def observe(self, store):
+            result = super().observe(store)
+            return _observation(result.id, text="not completed", fingerprint=result.fingerprint)
+
+    store = _FakeStore()
+    browser = NeverCompletedBrowser([
+        {"success": False, "error": "TimeoutError: late page"},
+    ] * 3)
+    executor = _SnapshotExecutor([
+        Action("click", "#first"), Action("click", "#second"), Action("click", "#third")
+    ])
+
+    verdict = Controller(
+        _FakePlanner((_checkpoint(),)), executor, _GroundedVerifier(), browser, store
+    ).run(_scenario(max_steps=10))
+
+    assert verdict.status == "UNKNOWN"
+    assert "recovery exhausted" in verdict.reason
+    assert browser.steps == 3
 
 
 def test_explicit_executor_aliases_win_over_kwargs_fallback() -> None:
