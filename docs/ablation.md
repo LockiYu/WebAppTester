@@ -19,7 +19,7 @@
 然后用本地 Ollama 运行对照实验，输出目录也应放在私有位置：
 
 ```sh
-.venv/bin/webapptester-ablation \
+webapptester-ablation \
   /private/path/formal-scenarios.json \
   --output /private/path/webapptester-ablation \
   --model qwen2.5:3b
@@ -58,10 +58,10 @@ B1 的 Discourse 运行和 B2 的 Admidio 运行均已到达目标页面，但 V
 启动三个隔离的应用程序并刷新其私有登录状态后，执行以下操作：
 
 ```sh
-.venv/bin/python scripts/bootstrap_4gaboards_auth.py
-.venv/bin/python scripts/bootstrap_admidio_auth.py
-.venv/bin/python scripts/bootstrap_discourse_auth.py
-.venv/bin/python scripts/run_cross_app_pilot.py
+python scripts/bootstrap_4gaboards_auth.py
+python scripts/bootstrap_admidio_auth.py
+python scripts/bootstrap_discourse_auth.py
+python scripts/run_cross_app_pilot.py
 ```
 
 最后一条命令会在隔离的 4gaBoards 测试环境中创建一个唯一命名的项目，在仪表板和侧边栏中对其进行验证，并生成一个包含三个场景的私有清单。它使用相同的本地 Ollama 模型（默认为 `qwen3.5:9b`）运行所有四个条件，然后将清单、测试环境元数据、十二份报告和摘要存储到位于 `runs/cross-app-pilot/` 下的带时间戳且被 Git 忽略的目录中。每个条件在该运行中看到相同的项目和场景文本。使用 `--variant B3` 进行更简短的设置检查。该脚本不会联系付费模型提供商。

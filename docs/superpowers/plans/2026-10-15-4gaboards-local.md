@@ -23,9 +23,9 @@
 
 **文件：** 创建 `examples/4gaboards/compose.yaml`, `scripts/setup_4gaboards_local.py`, `tests/test_4gaboards_setup.py`；修改 `README.md`。
 
-**接口：** `.venv/bin/python scripts/setup_4gaboards_local.py` 在不存在时创建 `runs/4gaboards-local/instance.env` (0600) 并仅打印下一个 Docker 命令。Compose 模板从该环境文件中读取 `POSTGRES_PASSWORD`, `SECRET_KEY`, `DEFAULT_ADMIN_USERNAME`, `DEFAULT_ADMIN_EMAIL`, `DEFAULT_ADMIN_NAME` 和 `DEFAULT_ADMIN_PASSWORD`。4gaBoards 镜像为 `ghcr.io/rargames/4gaboards:3.2.16`；Postgres 为 `public.ecr.aws/docker/library/postgres:16-alpine`。
+**接口：** `python scripts/setup_4gaboards_local.py` 在不存在时创建 `runs/4gaboards-local/instance.env` (0600) 并仅打印下一个 Docker 命令。Compose 模板从该环境文件中读取 `POSTGRES_PASSWORD`, `SECRET_KEY`, `DEFAULT_ADMIN_USERNAME`, `DEFAULT_ADMIN_EMAIL`, `DEFAULT_ADMIN_NAME` 和 `DEFAULT_ADMIN_PASSWORD`。4gaBoards 镜像为 `ghcr.io/rargames/4gaboards:3.2.16`；Postgres 为 `public.ecr.aws/docker/library/postgres:16-alpine`。
 - [ ] **步骤 1：编写测试。** 断言 setup 创建 mode-0600 的环境文件，在重复调用时保留该文件，包含所需的变量名称且值为非空随机数，且不打印任何值。断言 Compose 模板仅绑定 `127.0.0.1:3001:1337` 并使用不同的命名卷。
-- [ ] **步骤 2：验证红色。** 运行 `.venv/bin/python -m pytest tests/test_4gaboards_setup.py -q`；预期结果为缺少 setup 脚本/模板。
+- [ ] **步骤 2：验证红色。** 运行 `python -m pytest tests/test_4gaboards_setup.py -q`；预期结果为缺少 setup 脚本/模板。
 - [ ] **步骤 3：实现。** 使用 `secrets.token_urlsafe` 生成数据库、会话和管理员密钥。使用独占文件创建和 `os.chmod(path, 0o600)`。Compose 声明 `db` 和 `app`、健康检查 `BASE_URL=http://127.0.0.1:3001` 以及命名卷；不要包含明文密码。不要读取或修改 `/Users/loki/4gaBoards-test`。
 - [ ] **步骤 4：验证绿色并启动。** 运行聚焦/完整测试；运行 setup 和 `docker compose --env-file runs/4gaboards-local/instance.env -p webapptester-4ga -f examples/4gaboards/compose.yaml up -d`；验证两个容器均健康且 `/login` 在端口 3001 上响应。不要打印环境变量内容。
 - [ ] **步骤 5：提交。** 仅使用 `git commit -m "feat: provision isolated 4gaBoards test instance"` 提交命名的源/测试/文档文件。

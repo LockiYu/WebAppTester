@@ -28,7 +28,7 @@ export DISCOURSE_HOSTNAME=127.0.0.1 RAILS_ENV=development
 隔离的管理员已在本地创建。其凭据位于私有的 `runs/discourse-local/admin.env` 文件中。需要时刷新浏览器登录状态：
 
 ```sh
-.venv/bin/python scripts/bootstrap_discourse_auth.py
+python scripts/bootstrap_discourse_auth.py
 ```
 
 该命令写入权限为 `0600` 的 `runs/discourse-local/auth.json`。运行需要登录的场景时，通过 `--storage-state` 加载。公开主题的验收报告位于 `runs/discourse-local/topic-heading-acceptance/20261019T085002912699Z/report.json`：

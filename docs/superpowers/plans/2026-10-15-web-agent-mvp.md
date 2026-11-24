@@ -75,7 +75,7 @@ def parse_action(raw: dict[str, object]) -> Action:
     return Action(**raw)
 ```
 
-- [ ] **步骤 4：验证绿色。**运行 `python3 -m venv .venv`、`.venv/bin/pip install -e '.[test]'`，然后运行 `.venv/bin/python -m pytest tests/test_schema.py -q`；预期通过 3 项。添加 `.gitignore` 条目 `.venv/`、`__pycache__/`、`.pytest_cache/`、`runs/`、`.env`、`*.egg-info/`。
+- [ ] **步骤 4：验证绿色。**运行 `conda env create -f environment.yml`、`conda activate webapptester`，然后运行 `python -m pytest tests/test_schema.py -q`；预期通过 3 项。添加 `.gitignore` 条目 `.conda/`、`__pycache__/`、`.pytest_cache/`、`runs/`、`.env`、`*.egg-info/`。
 - [ ] **步骤 5：提交。**`git add pyproject.toml .gitignore src/webapptester/__init__.py src/webapptester/schema.py tests/test_schema.py && git commit -m "feat: define test run protocol"`。
 
 ## 任务 2：模型提供商与角色边界
@@ -151,7 +151,7 @@ def retry_parse(provider, system, user, parse):
 - [ ] **步骤 1：编写浏览器冒烟测试。** `tests/test_e2e.py` 在空闲的回环端口上启动 `demo/app.py`，启动 Playwright Chromium，通过 BrowserGateway 导航，填写项目名称，点击创建，并断言截图/追踪文件存在且仪表板和侧边栏均显示该名称。通过 Controller 执行的脚本化 Planner/Executor/Verifier 运行必须返回 PASS 并保存证据。缺少侧边栏引用时必须返回 UNKNOWN。
 - [ ] **步骤 2：验证红色。**运行 `python3 -m pytest tests/test_e2e.py -q`；预期结果为缺少演示或 CLI 行为。
 - [ ] **步骤 3：实现演示和 CLI。**演示使用 `http.server.ThreadingHTTPServer`，本地内存项目列表、HTML 转义和 POST 重定向。CLI 使用 `argparse`，创建带时间戳的运行目录，启动 Chromium（使用 `sync_playwright()`），启动 `context.tracing`，调用 Controller，在 `finally` 中将跟踪停止到 `trace.zip`，并打印状态/报告路径。一旦 `cli.py` 存在，就在 `pyproject.toml` 中注册 `webapptester = "webapptester.cli:main"`。退出代码为 0 表示 PASS，1 表示 FAIL，2 表示 UNKNOWN。如果缺少 Ollama 服务或缺少 `DEEPSEEK_API_KEY`，打印有用的错误信息并仍然持久化 UNKNOWN 报告。
-- [ ] **步骤 4：记录确切的启动过程。** README 命令：`python3 -m venv .venv`, `.venv/bin/pip install -e '.[test]'`, `.venv/bin/python -m playwright install chromium`, `.venv/bin/python demo/app.py --port 8765`, `ollama serve`, `ollama pull qwen2.5:3b`, `.venv/bin/webapptester --scenario 'Create project Alpha and verify it appears on dashboard and sidebar' --url http://127.0.0.1:8765 --provider ollama --model qwen2.5:3b --output runs/demo`。解释 `DEEPSEEK_API_KEY` 并使用 `.venv/bin/playwright show-trace runs/demo/trace.zip` 追踪查看。
+- [ ] **步骤 4：记录确切的启动过程。** README 命令：`conda env create -f environment.yml`, `conda activate webapptester`, `python -m playwright install chromium`, `python demo/app.py --port 8765`, `ollama serve`, `ollama pull qwen2.5:3b`, `webapptester --scenario 'Create project Alpha and verify it appears on dashboard and sidebar' --url http://127.0.0.1:8765 --provider ollama --model qwen2.5:3b --output runs/demo`。解释 `DEEPSEEK_API_KEY` 并使用 `playwright show-trace runs/demo/trace.zip` 追踪查看。
 - [ ] **步骤 5：验证绿色状态并检查工件。**运行 `python3 -m playwright install chromium`、`python3 -m pytest -q`，然后执行一次脚本化的端到端运行和一次实时 Ollama 运行。检查 `report.json` 以获取 `steps <= 35`，确认非空检查点证据为 PASS，验证截图文件及 `trace.zip`。如果 Ollama 输出无效，记录 UNKNOWN 并识别模型/协议限制，而不是更改裁决规则。
 - [ ] **步骤 6：提交并推送。**`git add demo/app.py src/webapptester/cli.py tests/test_e2e.py README.md pyproject.toml && git commit -m "feat: run auditable browser agent from CLI"`；然后在完整测试套件通过后执行 `git push origin main`。不要将课程 PPT/markdown 或位于 `/Users/loki/4gaBoards-test` 下的文件纳入暂存区。
 

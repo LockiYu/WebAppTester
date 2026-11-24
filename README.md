@@ -4,13 +4,28 @@ WebAppTester 通过 Planner、Executor 和 Verifier 三个角色执行有步数�
 
 浏览器操作超时或定位引用失效后，控制器会先重新观察页面并核验动作是否已生效，再在剩余步数内尝试新的操作；连续恢复失败会以 UNKNOWN 结束，避免重复提交和无限重试。使用 DeepSeek Flash 时，Verifier 会把最近的页面截图与 DOM 文本一起核验，并在报告中记录 `visual_status`。在完整证据方案中，文字与截图结论不一致或截图无法读取时，不会给出有把握的 PASS/FAIL。截图会发送到 DeepSeek 服务，可能包含页面上的敏感内容；运行前应使用专用测试账户和测试数据。
 
+## 环境准备（conda）
+
+本项目统一使用 conda 管理 Python 环境，不再使用 `venv`。环境的依赖声明保存在仓库根目录的 `environment.yml` 中（Python 3.12 + 以可编辑模式安装的 `.[test,ui]`）：
+
+```sh
+conda env create -f environment.yml
+conda activate webapptester
+python -m playwright install chromium
+```
+
+之后所有命令都在已激活的 `webapptester` 环境中执行；如果只需命令行与测试依赖，可将 `conda env create` 换成 `conda create -n webapptester python=3.12 pip && python -m pip install -e '.[test]'`。环境重建时可执行 `conda env remove -n webapptester` 后重新创建，项目目录内不保留任何 Python 解释器。
+
+如果从 CDN 下载 Chromium 很慢，可临时改用镜像完成同一步骤：
+
+```sh
+PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright python -m playwright install chromium chromium-headless-shell
+```
+
 ## 本地演示
 
 ```sh
-python3 -m venv .venv
-.venv/bin/pip install -e '.[test]'
-.venv/bin/python -m playwright install chromium
-.venv/bin/python demo/app.py --port 8765
+python demo/app.py --port 8765
 ```
 
 在另一个终端中，启动 Ollama 并获取具体的本地模型：
@@ -18,7 +33,7 @@ python3 -m venv .venv
 ```sh
 ollama serve
 ollama pull qwen2.5:3b
-.venv/bin/webapptester --scenario 'Create project Alpha and verify it appears on dashboard and sidebar' --url http://127.0.0.1:8765 --provider ollama --model qwen2.5:3b --output runs/demo
+webapptester --scenario 'Create project Alpha and verify it appears on dashboard and sidebar' --url http://127.0.0.1:8765 --provider ollama --model qwen2.5:3b --output runs/demo
 ```
 
 CLI 会在指定输出目录下创建带唯一 UTC 时间戳的子目录（`runs/demo/<timestamp>/`），并写入 `report.json`、追加记录的 `events.jsonl`、`screenshots/` 中的 PNG 截图以及 `trace.zip`。PASS、FAIL、UNKNOWN 的退出码分别为 0、1、2。运行器依次尝试 Playwright 安装的完整版 Chromium、默认浏览器，以及已安装的 Google Chrome。运行本地验收测试前，请先安装 Playwright 浏览器。
@@ -26,7 +41,7 @@ CLI 会在指定输出目录下创建带唯一 UTC 时间戳的子目录（`runs
 若要顺序运行两个场景并导出一个摘要，请使用包含的批处理配置：
 
 ```sh
-.venv/bin/webapptester-batch examples/demo-batch.json --output runs/batch
+webapptester-batch examples/demo-batch.json --output runs/batch
 ```
 
 每个场景都在带时间戳的批量运行目录中保留自己的产物。该目录包含 `batch-summary.json` 和 `batch-summary.csv`；汇总记录场景元数据、状态、报告路径、步数和原因，不包含操作输入值。全部场景通过时退出码为 0，任一场景失败时为 1，没有失败但至少一个场景无法判定时为 2。
@@ -38,7 +53,7 @@ CLI 会在指定输出目录下创建带唯一 UTC 时间戳的子目录（`runs
 要在开发期间本地检查最新的追踪：
 
 ```sh
-.venv/bin/playwright show-trace "$(ls -td runs/demo/*/trace.zip | head -1)"
+playwright show-trace "$(ls -td runs/demo/*/trace.zip | head -1)"
 ```
 
 Playwright Trace 是本地开发产物，可能包含会话 Cookie 等敏感信息。结果看板不提供 Trace 下载；如需检查，请使用所选报告中的本地路径。
@@ -50,7 +65,7 @@ Playwright Trace 是本地开发产物，可能包含会话 Cookie 等敏感信�
 一次性创建私有首次运行凭据：
 
 ```sh
-.venv/bin/python scripts/setup_4gaboards_local.py
+python scripts/setup_4gaboards_local.py
 ```
 
 该命令会创建 `runs/4gaboards-local/instance.env`（模式为 `0600`），并打印下一个 Docker 命令，但不打印任何凭据值。使用打印的命令启动测试环境，或运行：
@@ -65,13 +80,13 @@ docker compose --env-file runs/4gaboards-local/instance.env \
 测试环境健康后，在单独的 Playwright 上下文中创建私有浏览器登录状态：
 
 ```sh
-.venv/bin/python scripts/bootstrap_4gaboards_auth.py
+python scripts/bootstrap_4gaboards_auth.py
 ```
 
 该命令会读取本地首次运行凭据但不打印它们，确认已认证的仪表板，并写入 `runs/4gaboards-local/auth.json`（模式为 `0600`）。使用此状态配合 `--storage-state` 运行单个场景：
 
 ```sh
-.venv/bin/webapptester \
+webapptester \
   --scenario "Open the dashboard" \
   --url http://127.0.0.1:3001/ \
   --storage-state runs/4gaboards-local/auth.json \
@@ -96,7 +111,7 @@ docker compose --env-file runs/4gaboards-local/instance.env \
 
 ```sh
 WEBAPPTESTER_4GA_SMOKE=1 \
-  .venv/bin/python -m pytest tests/test_4gaboards_smoke.py -q
+  python -m pytest tests/test_4gaboards_smoke.py -q
 ```
 
 它会在
@@ -110,7 +125,7 @@ WEBAPPTESTER_4GA_SMOKE=1 \
 在确定性检查之后运行一次提供的模型场景时，请保持私有存储状态为本地，并检查持久化的报告路径：
 
 ```sh
-PYTHONPATH=src .venv/bin/webapptester \
+PYTHONPATH=src webapptester \
   --scenario "Official example: In the dashboard click Add project, enter the project name Course Test and confirm, then check the new project appears on both dashboard and sidebar." \
   --url http://127.0.0.1:3001/ \
   --provider ollama --model qwen2.5:3b \
@@ -123,7 +138,7 @@ PYTHONPATH=src .venv/bin/webapptester \
 使用以下命令运行测试：
 
 ```sh
-.venv/bin/python -m pytest -q
+python -m pytest -q
 ```
 
 ## B0–B3 消融实验
@@ -135,8 +150,8 @@ PYTHONPATH=src .venv/bin/webapptester \
 安装可选的 Streamlit UI 并使用以下命令启动测试与结果看板：
 
 ```sh
-.venv/bin/pip install -e '.[test,ui]'
-.venv/bin/streamlit run src/webapptester/dashboard.py --server.address 127.0.0.1 -- --runs-root runs
+python -m pip install -e '.[test,ui]'
+streamlit run src/webapptester/dashboard.py --server.address 127.0.0.1 -- --runs-root runs
 ```
 
 打开 [http://127.0.0.1:8501](http://127.0.0.1:8501)。页面顶部可手动输入自然语言场景，或导入 UTF-8 `.txt` / `.json` 场景文件并选择一条案例；填写应用 URL、模型、步数上限、实验配置及已有的登录状态后点击「开始测试」。同一页面每两秒刷新当前阶段、操作步数、最近操作类型和异常次数。结束后，报告自动加入下方运行历史。DeepSeek 仅在本机有 `DEEPSEEK_API_KEY` 时可选，且沿用人民币 20 元预算台账。每次网页启动只执行一条所选案例；批量 B0–B3 比较仍使用命令行工具。
@@ -149,7 +164,7 @@ PYTHONPATH=src .venv/bin/webapptester \
 课程目标版本 Admidio 5.0.2 的独立 Compose 模板位于 `examples/admidio/compose.yaml`。它仅绑定 `127.0.0.1:3102`，数据库只在 Compose 网络内开放，并使用独立的命名卷。使用以下命令创建被 Git 忽略、权限为 `0600` 的数据库凭据：
 
 ```sh
-.venv/bin/python scripts/setup_admidio_local.py
+python scripts/setup_admidio_local.py
 docker compose --env-file runs/admidio-local/instance.env \
   -p webapptester-admidio -f examples/admidio/compose.yaml up -d
 ```
@@ -166,7 +181,7 @@ curl -L -C - --retry 3 \
   'https://sourceforge.net/projects/admidio/files/Admidio/5.0.x/admidio-5.0.2.zip/download'
 shasum -a 256 runs/admidio-local/admidio-5.0.2.zip
 unzip -q -n runs/admidio-local/admidio-5.0.2.zip -d runs/admidio-local/app
-.venv/bin/python scripts/setup_admidio_native.py
+python scripts/setup_admidio_native.py
 /opt/homebrew/opt/php@8.3/bin/php -S 127.0.0.1:3102 -t runs/admidio-local/app
 ```
 
@@ -174,7 +189,7 @@ unzip -q -n runs/admidio-local/admidio-5.0.2.zip -d runs/admidio-local/app
 `setup_admidio_native.py` 仅创建专用的 `webapptester_admidio` 数据库和 `wat_admidio` 本地用户；它期望基于套接字的 MySQL 管理访问权限，并拒绝不一致的现有状态。在端口 3102 上完成官方浏览器安装程序，使用被忽略的 `runs/admidio-local/instance.env` 中的数据库密码和被忽略的 `runs/admidio-local/admin.env` 中的测试管理员账户。数据库主机为 `127.0.0.1`，组织为一次性本地测试组织，且所有私有文件必须保留在 Git 之外。然后保存浏览器登录状态：
 
 ```sh
-.venv/bin/python scripts/bootstrap_admidio_auth.py
+python scripts/bootstrap_admidio_auth.py
 ```
 
 当前的本地测试环境具有 49 个应用程序表和一个已验证的管理员会话。本地运行的 Ollama `qwen3.5:9b` 打开了偏好设置，并通过两次浏览器操作验证了其可见的 `heading` 区域。私有报告、截图和 Trace 位于 `runs/admidio-local/semantic-heading-acceptance/20261019T082127941731Z/` 下。
