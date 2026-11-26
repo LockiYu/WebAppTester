@@ -68,3 +68,5 @@ python scripts/run_cross_app_pilot.py
 
 2026-10-19 完成的完整单命令复现，在十二次运行中产生了 11 个 PASS 和 1 个 UNKNOWN；其摘要位于 `runs/cross-app-pilot/20261019T145631612033Z/results/ablation-summary.json`。
 所有十二份报告均已加载到结果仪表板中。两次重复中不同的 UNKNOWN 单元格展示了为何每个单元格仅运行一次仅具有诊断意义。
+
+2026-11-26 又在当前可用的 4gaBoards 隔离环境中进行了两场景、三轮、四配置的重复试跑，并用受控无效证据检查 B0 与 B1 的裁决差异。方法、逐次结果和解读见[追加实验报告](experiment-2026-11-26.md)。

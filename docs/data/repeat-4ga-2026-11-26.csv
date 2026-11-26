@@ -1,0 +1,25 @@
+repeat,variant,scenario,status,steps,elapsed_seconds,prompt_tokens,reason
+repeat-01,B0,add-project-control,PASS,2,15.84,3859,the baseline verifier marked all required checkpoints SAT
+repeat-01,B0,project-two-regions,PASS,3,60.09,7535,the baseline verifier marked all required checkpoints SAT
+repeat-01,B1,add-project-control,PASS,4,69.84,13132,all required checkpoints have supported SAT evidence
+repeat-01,B1,project-two-regions,UNKNOWN,5,130.33,16624,browser action budget exhausted
+repeat-01,B2,add-project-control,PASS,2,14.78,3335,all required checkpoints have supported SAT evidence
+repeat-01,B2,project-two-regions,UNKNOWN,5,136.67,17275,browser action budget exhausted
+repeat-01,B3,add-project-control,UNKNOWN,5,80.76,15932,browser action recovery exhausted
+repeat-01,B3,project-two-regions,UNKNOWN,5,144.65,17284,browser action budget exhausted
+repeat-02,B0,add-project-control,PASS,2,18.85,3341,the baseline verifier marked all required checkpoints SAT
+repeat-02,B0,project-two-regions,PASS,3,73.21,7900,the baseline verifier marked all required checkpoints SAT
+repeat-02,B1,add-project-control,PASS,2,26.47,3627,all required checkpoints have supported SAT evidence
+repeat-02,B1,project-two-regions,UNKNOWN,1,32.27,2802,executor requested stop
+repeat-02,B2,add-project-control,PASS,2,20.49,3617,all required checkpoints have supported SAT evidence
+repeat-02,B2,project-two-regions,UNKNOWN,5,128.47,17071,browser action budget exhausted
+repeat-02,B3,add-project-control,PASS,2,17.69,3624,all required checkpoints have supported SAT evidence
+repeat-02,B3,project-two-regions,UNKNOWN,5,162.49,20322,browser action budget exhausted
+repeat-03,B0,add-project-control,PASS,2,17.06,3759,the baseline verifier marked all required checkpoints SAT
+repeat-03,B0,project-two-regions,PASS,1,32.57,1370,the baseline verifier marked all required checkpoints SAT
+repeat-03,B1,add-project-control,PASS,2,48.9,4279,all required checkpoints have supported SAT evidence
+repeat-03,B1,project-two-regions,UNKNOWN,5,172.25,20116,browser action budget exhausted
+repeat-03,B2,add-project-control,UNKNOWN,3,57.76,16424,controller stopped after ModelOutputError
+repeat-03,B2,project-two-regions,PASS,1,32.4,1370,all required checkpoints have supported SAT evidence
+repeat-03,B3,add-project-control,PASS,2,23.99,4050,all required checkpoints have supported SAT evidence
+repeat-03,B3,project-two-regions,PASS,1,31.11,1370,all required checkpoints have supported SAT evidence
